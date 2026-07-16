@@ -1,0 +1,4 @@
+# 対象 EC2 のプライマリ IP またはホスト名を 1 行 1 件で記載します。
+# 空行と # コメント行は無視されます。
+# <primary-ip-or-hostname-1>
+# <primary-ip-or-hostname-2>

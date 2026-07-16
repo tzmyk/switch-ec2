@@ -1,0 +1,413 @@
+# switch-ec2 仕様書
+
+RHEL PAYG ライセンスの EC2 を、ELC/BYOS 系 AMI から起動した新 EC2 へ置き換えるスクリプト群の仕様書。
+
+- 操作手順は `README.md` を参照
+- 検証環境と検証実績は `test-env/`（リポジトリ管理外・ローカル検証用）を参照
+- 本書はスクリプトの方式・処理・入出力・安全ガードの仕様を定義する
+
+## 1. 背景と目的
+
+### 1.1 課題
+
+RHEL の PAYG（Pay As You Go）ライセンスで稼働中の EC2 を、ELC（Extended Life Cycle）等の
+別ライセンス契約へ切り替えたい。しかし EC2 の課金コード（`UsageOperation`）は
+**インスタンス起動時に指定した AMI で確定し、後から変更できない**。
+
+### 1.2 解決方式
+
+この性質を逆手に取り、次の方式でライセンスだけを切り替える。
+
+1. 切替先ライセンスの AMI（ELC/BYOS 系）から新 EC2 を起動する（この時点で課金コードが確定）
+2. 新 AMI 由来のルートボリュームを破棄予定として切り離す
+3. 旧 EC2 の全 EBS（OS ディスク含む）と全 ENI を新 EC2 へ付け替える
+
+### 1.3 保証する性質
+
+| 項目 | 保証内容 | 根拠 |
+|---|---|---|
+| OS・データ | 旧 EC2 と完全同一 | EBS ボリューム自体を移設（再作成しない） |
+| ファイルシステム UUID | 不変 | 同上 |
+| プライマリ/セカンダリ IP・MAC | 不変 | ENI ごと移設 |
+| Elastic IP | 不変 | EIP は ENI に紐付くため ENI 移設で自動追随 |
+| タグ・インスタンスタイプ・IAM ロール等 | 引き継ぎ | 01 で保存した属性を 03 の起動時に再指定 |
+| UsageOperation | 新 AMI 由来の値へ変化 | 起動時 AMI で確定する仕様 |
+
+### 1.4 方式上の必然的制約
+
+- **旧 EC2 は terminate される。** プライマリ ENI（DeviceIndex 0）は running/stopped の
+  インスタンスから単独デタッチできないため、同一 IP を引き継ぐには terminate が唯一の手段。
+- **インスタンス ID は変わる。** cloud-init が新規インスタンスと判定するため、
+  OS 内事前作業（SSH ホスト鍵保持・ホスト名保持）が必要（README「OS内想定作業」参照）。
+- **切替後は RHUI が使えなくなる。** PAYG 用リポジトリは ELC インスタンスで認可されないため、
+  `subscription-manager` の再登録が必要（同上）。
+
+## 2. システム構成
+
+### 2.1 実行環境
+
+| 環境 | 役割 | 使用コンポーネント | 必要条件 |
+|---|---|---|---|
+| CloudShell（または同等の bash 環境） | AWS API 操作の全て | `01`〜`04`、`lib/common.sh` | AWS CLI v2、`jq`、admin 相当権限 |
+| 踏み台 EC2 | 対象 EC2 の OS 内実測 | `ec2-side/` | 対象への SSH 到達性。`jq` 不要（bash/ssh/awk/diff/sort のみ） |
+
+### 2.2 コンポーネント一覧
+
+| ファイル | 役割 |
+|---|---|
+| `lib/common.sh` | 設定読込、AWS CLI ラッパー、待機、対象一覧処理の共通ライブラリ |
+| `01_prepare.sh` | 事前検査とベースライン状態ファイルの保存 |
+| `02_backup.sh` | バックアップ AMI の作成（2フェーズ: 発行→待機） |
+| `03_switch.sh` | 切替本体（破壊的操作を含む） |
+| `04_verify.sh` | AWS API 側の切替後検証 |
+| `ec2-side/collect_disk_info.sh` | 対象 EC2 の lsblk/blkid/os-release を SSH で収集 |
+| `ec2-side/compare_disk_info.sh` | before/after の UUID 対応表と OS リリースを比較 |
+| `config.env` / `targets.txt` | CloudShell 側の設定・対象一覧（`.example` から作成） |
+| `ec2-side/ssh.env` / `hosts.txt` | 踏み台側の SSH 設定・対象一覧（`.example` から作成） |
+| `test-env/` | 検証専用 Terraform 環境（本番手順外・リポジトリ管理外） |
+
+### 2.3 データフロー
+
+```
+01_prepare ──→ work/<旧ID>/ ベースライン状態ファイル ──┬─→ 03_switch が入力として使用
+02_backup  ──→ work/<旧ID>/backup_ami_id.txt ─────────┤
+                                                       └─→ 04_verify が期待値として使用
+03_switch  ──→ work/<旧ID>/new_instance_id.txt ほか ────→ 04_verify が対象特定に使用
+collect(before) ─→ ec2-side/work/<host>/before_*.txt ──→ compare が比較
+collect(after)  ─→ ec2-side/work/<host>/after_*.txt ───→ compare が比較
+```
+
+## 3. 対応範囲
+
+### 3.1 前提条件
+
+- 対象インスタンスが `running` であること（01 で検査）
+- `NEW_AMI_ID` が同一リージョンに存在し `available` であること（01・03 で検査)
+- 新 AMI と旧インスタンスのアーキテクチャが一致すること（01・03 で検査)
+- 新 AMI と旧インスタンスの BootMode が互換であること（§5.2）
+
+### 3.2 非対応構成（01 が検出して中止する）
+
+| 構成 | 検出方法 |
+|---|---|
+| placement group | `Placement.GroupName` が非空 |
+| Dedicated Host | `Placement.HostId` 非空、`Affinity=host`、または `Tenancy=host` |
+| マルチネットワークカード | いずれかの ENI の `Attachment.NetworkCardIndex` > 0 |
+| hibernation | `HibernationOptions.Configured == true` |
+| Nitro Enclaves | `EnclaveOptions.Enabled == true` |
+| Multi-Attach EBS | いずれかのボリュームの `MultiAttachEnabled == true` |
+| インスタンスストア | BlockDeviceMappings に EBS 以外が存在（`ALLOW_INSTANCE_STORE_LOSS=true` で警告に緩和可） |
+| Spot インスタンス | `InstanceLifecycle == spot` |
+
+### 3.3 引き継ぎ対象属性
+
+インスタンスタイプ、KeyName、IAM インスタンスプロファイル、全 ENI（DeviceIndex 維持）、
+全 EBS（デバイス名維持。旧ルートのみ §5.4）、Placement（AZ・Tenancy）、EbsOptimized、
+Monitoring、MetadataOptions、ユーザー管理タグ、終了保護・停止保護、
+InstanceInitiatedShutdownBehavior、MaintenanceOptions、PrivateDnsNameOptions、
+カスタム CPU options（タイプ標準値との差分がある場合）、CapacityReservationSpecification、
+UserData（`COPY_USER_DATA=true` の opt-in）、t2/t3/t3a/t4g の CreditSpecification。
+
+**引き継がないもの**: `aws:` で始まる予約タグ（API 仕様上コピー不可）、
+`COPY_USER_DATA=false` の場合の UserData、上記以外の属性（起動時デフォルトになる）。
+
+## 4. 設定仕様
+
+### 4.1 config.env（CloudShell 側）
+
+| 変数 | デフォルト | 仕様 |
+|---|---|---|
+| `NEW_AMI_ID` | なし（必須） | 切替先ライセンスの AMI ID |
+| `AWS_REGION` | 空 | 空なら AWS CLI のデフォルトリージョン。非空なら全コマンドに `--region` 付与 |
+| `BACKUP_NO_REBOOT` | `false` | `true` で `create-image --no-reboot`（整合性は実行時状態依存） |
+| `ALLOW_UEFI_PREFERRED_ON_BIOS` | `false` | §5.2 の危険な組み合わせを opt-in で許可 |
+| `ALLOW_INSTANCE_STORE_LOSS` | `false` | インスタンスストア消失を opt-in で許可 |
+| `COPY_USER_DATA` | `false` | `true` で旧 EC2 の UserData を引き継ぐ。新インスタンス ID 検知後に cloud-init が再実行するため、冪等性確認済みの場合のみ有効化 |
+| `EXPECTED_NEW_USAGE_OPERATION` | 空 | 04 の期待値判定（§7.1）。空なら「変化したこと」のみ判定 |
+| `WORK_DIR` | `./work` | 状態ファイル保存先 |
+| `WAIT_IMAGE_AVAILABLE_TIMEOUT` | 3600 | AMI available 待機タイムアウト（秒）。ポーリング間隔 30 秒 |
+| `WAIT_INSTANCE_STATE_TIMEOUT` | 1800 | インスタンス状態待機（秒）。間隔 15 秒 |
+| `WAIT_VOLUME_STATE_TIMEOUT` | 1800 | ボリューム状態待機（秒）。間隔 10 秒 |
+| `WAIT_ENI_AVAILABLE_TIMEOUT` | 900 | ENI available 待機（秒）。間隔 10 秒 |
+| `WAIT_STATUS_OK_TIMEOUT` | 1800 | 2/2 ステータスチェック待機（秒）。間隔 20 秒 |
+
+### 4.2 targets.txt（CloudShell 側）
+
+- 1 行 1 インスタンス ID。空行・`#` コメント行は無視。前後空白は除去
+- 全行が `^i-[0-9a-f]+$` に一致しない場合、または重複がある場合は**処理開始前に全体エラー**
+
+### 4.3 ssh.env / hosts.txt（踏み台側）
+
+| 変数 | デフォルト | 仕様 |
+|---|---|---|
+| `SSH_USER` | `ec2-user` | 対象 EC2 のログインユーザー |
+| `SSH_KEY` | 空 | 秘密鍵パス。空なら `-i` を付けない |
+| `SSH_PORT` | `22` | SSH ポート |
+| `SSH_OPTS` | 空 | 追加 ssh オプション（空白区切り。複雑な値は ssh_config へ） |
+
+`hosts.txt` は 1 行 1 ホスト（IP/ホスト名）。空行・コメント・前後空白の扱いは targets.txt と同じ。
+
+## 5. 処理仕様
+
+### 5.1 共通仕様（lib/common.sh）
+
+- 全スクリプト `set -euo pipefail`。エラーは `die`（ログ＋非ゼロ return）で伝播
+- **対象一覧処理（`run_targets`）**: 対象を 1 台ずつサブシェル（`set -eEuo pipefail`）で処理。
+  1 台の失敗は記録して次の対象へ進み、最後に成功/失敗サマリを表示。
+  失敗が 1 台でもあれば終了コード 1
+- **AWS CLI ラッパー（`aws_json`/`aws_text`）**: `--output` とリージョンを共通化し、
+  stdin を `/dev/null` に切り離す（エラー時の auto-prompt が対象一覧を吸い込む事故の防止）
+- **確認プロンプト（`confirm_or_exit`）**: 破壊的操作前に `yes` 入力を要求。
+  `--yes` で省略可。読み取りは可能な限り `/dev/tty` から行う（stdin 競合の防止）
+- **待機（`wait_until`）**: 条件関数をポーリング。条件関数の戻り値で分岐する
+  - `0`: 条件成立、待機終了
+  - `1`: 未達（AWS API の一時エラー含む）、リトライ継続
+  - `2`: **到達不能な終端状態、即時失敗**（タイムアウトを待たない）
+- **終端状態の定義**: インスタンス待機中の `terminated`（terminated 待ち以外）、
+  ボリュームの `error`/`deleted`/削除済み、AMI の `failed`/`deregistered`/削除済み
+- **EBS アタッチ完了判定**: `Volume.State` ではなく
+  `Attachments[]` に「対象インスタンス ID・デバイス名・`State=attached`」のエントリが
+  あることを確認する（`volume_attachment_is_attached`）
+
+### 5.2 01_prepare.sh
+
+**目的**: 切替可否の検査と、03・04 が使うベースライン状態ファイルの保存。
+
+**処理順序**（検証が先、書き込みは後。失敗した prepare が既存ベースラインを壊さない）:
+
+1. 切替済みガード: `new_instance_id.txt` が存在する対象は再 prepare 禁止（die）
+2. NEW_AMI の存在・`available` 確認（プロセス内 1 回だけ実行しキャッシュ）
+3. 対象の describe 取得、`running` 確認、アーキテクチャ一致確認
+4. BootMode 互換性判定（下表）
+5. Spot を含む非対応構成の検出（§3.2）
+6. 全検証通過後に追加属性、UserData、インスタンスタイプ標準 CPU 値を取得。UserData が非空かつ `COPY_USER_DATA=false` なら警告
+7. CPU options はタイプ標準値と一致すれば `null`、差分があれば CoreCount/ThreadsPerCore を保存
+8. 状態ファイル一式を書き出し（§6.1）
+
+**BootMode 互換性マトリクス**（空/null は `legacy-bios` に正規化。インスタンス側は
+実効値 `CurrentInstanceBootMode` を優先):
+
+| AMI \ インスタンス | uefi | legacy-bios |
+|---|---|---|
+| uefi | 一致: OK | 不一致: die |
+| legacy-bios | 不一致: die | 一致: OK |
+| uefi-preferred | 互換: OK | **既定 die**。`ALLOW_UEFI_PREFERRED_ON_BIOS=true` で警告に緩和（旧 OS ディスクのハイブリッドブート構成確認が前提） |
+
+### 5.3 02_backup.sh
+
+**目的**: 切替失敗時の復旧点となるバックアップ AMI の作成。
+
+- **2 フェーズ構成**: フェーズ 1 で全対象へ `create-image` を発行（数秒/台）、
+  フェーズ 2 で全 AMI の `available` を待機。作成は AWS 側で並列に進むため、
+  所要時間は台数比例でなく「最も遅い 1 台分」に近い
+- 発行前に古い `backup_ami_id.txt` を削除する（発行失敗時に stale な AMI ID が残り、
+  03 のガードをすり抜けるのを防ぐ)
+- AMI 名: `<Name タグ or インスタンス ID>-backup-<YYYYMMDD-HHMMSS>`
+- AMI・スナップショット両方に付与するタグ:
+  `Purpose=switch-ec2-backup`、`SourceInstanceId=<旧ID>`、`CreatedAt=<タイムスタンプ>`
+- 既定は reboot あり（整合性優先）。**フェーズ 1 で全対象の再起動がほぼ同時に発生**する点に注意
+  （クラスタ構成では targets.txt の分割か `BACKUP_NO_REBOOT=true` を検討）
+- `aws ec2 wait image-available`（固定 約10分）は使わず、
+  `WAIT_IMAGE_AVAILABLE_TIMEOUT` に従い独自ポーリング
+
+### 5.4 03_switch.sh
+
+**目的**: 切替本体。破壊的操作（旧 EC2 の terminate）を含む。
+
+**事前検証**（すべて破壊的操作の前に実施。1 つでも失敗したら対象を中止）:
+
+1. 必要な JSON 状態ファイル（20 ファイル）の存在・非空・JSON 妥当性と、
+   `user_data.b64.txt`・`backup_ami_id.txt` の存在を検証（`null`/`false` 単体は正当値として許容）。
+   UserData を引き継ぐ場合は破壊操作前に base64 妥当性も検証
+2. NEW_AMI の存在・`available`・アーキテクチャ一致の再確認（01 との間の deregister・差し替え対策）
+3. バックアップ AMI の `available` と `SourceInstanceId` タグが処理対象と一致することの確認
+4. 確認プロンプト（`--yes` で省略可）
+
+**切替シーケンス**:
+
+| # | 処理 | 補足 |
+|---|---|---|
+| 1 | 終了保護・停止保護を一時無効化（有効な場合のみ） | ERR trap を設定。**terminate 発行前に失敗した場合は保護を元の値へ自動復元** |
+| 2 | 旧 EC2 を停止 | |
+| 3 | **現物再照合**: 停止後の実際の EBS（VolumeId+DeviceName）と ENI（ID+DeviceIndex）が prepare 時と完全一致することを確認 | 不一致なら die（prepare 後の構成変更検出。この時点なら旧 EC2 は無傷で復旧可能） |
+| 4 | 全 EBS・全 ENI の `DeleteOnTermination=false` | terminate 時の巻き添え削除防止 |
+| 5 | 全 EBS をデタッチし `available` を待機 | |
+| 6 | 旧 EC2 を terminate、全 ENI の `available` を待機 | 以降 ERR trap 解除（保護復元は不能なため） |
+| 7 | 新 EC2 を起動 | 旧 ENI を DeviceIndex 維持で指定。`--client-token switch-ec2-<旧ID>`（応答喪失時に describe のフィルタで新 EC2 を特定可能）。§3.3 の属性を再指定。標準値と異なる CPU options のみ指定し、UserData は opt-in 時だけ `fileb://` で指定 |
+| 8 | 新 EC2 を停止 | |
+| 9 | 新 AMI 由来ルートをデタッチし、破棄予定タグを付与 | タグ: `Purpose=switch-ec2-discarded-root`、`DeleteAfterVerification=true`、`SourceOldInstanceId`、`NewInstanceId`。**削除はしない**（検証完了後に手動削除） |
+| 10 | 旧 EBS を新 EC2 へアタッチ | 旧ルートのみ**新 AMI の RootDeviceName** にアタッチ（AMI 世代間の `/dev/sda1` と `/dev/xvda` の差異を吸収）。他は元のデバイス名。attached 完了を厳密判定 |
+| 11 | EBS・ENI の `DeleteOnTermination` を prepare 時の値へ復元 | |
+| 12 | 新 EC2 を起動し 2/2 ステータスチェック OK を待機。停止保護を復元 | 終了保護は起動時に指定済み |
+
+**リラン非対応**: 途中失敗後の同一対象への再実行はサポートしない（設計判断）。
+失敗フェーズ別の復旧は README「手動復旧 runbook」に従う。
+
+### 5.5 04_verify.sh
+
+**目的**: AWS API 側の切替結果検証。判定項目は §7.1。
+
+- 対象ごとに `[PASS]`/`[FAIL]`/`[INFO]` を出力し、1 項目でも FAIL なら対象 FAIL
+- 読み取り専用（AWS 側の変更は行わない）
+
+### 5.6 ec2-side/collect_disk_info.sh
+
+**目的**: 対象 EC2 の OS 内情報（lsblk・blkid・os-release）を SSH で実測収集。
+
+- 引数: `before|after [--force]`。不正時は usage を表示し終了コード 2
+- 収集項目: `lsblk -nP -b -o NAME,SERIAL,UUID,FSTYPE,SIZE`（主情報・必須）、
+  `blkid`（補助・空許容）、`/etc/redhat-release`（必須）
+- **原子的収集**: 一時ファイルへ収集し、SSH 成功かつ必須ファイル非空を確認後に `mv` で確定
+  （接続失敗による証跡の空ファイル化を防止）
+- **before 上書き保護**: 既存の `before_*.txt` が 1 つでもあるホストは既定でエラー。
+  `--force` 指定時のみ警告付きで上書き（切替後の誤実行による証跡破壊の防止）
+- ssh は `-n` で stdin を切り離す（ホスト一覧ループの吸い込み防止）
+
+### 5.7 ec2-side/compare_disk_info.sh
+
+**目的**: before/after の「EBS ボリューム ID → ファイルシステム UUID」対応表と
+OS リリースの完全一致検証。
+
+- **対応表の生成**: lsblk の `SERIAL`（NVMe では `vol0abc...` 形式）を
+  EBS ボリューム ID `vol-0abc...` に変換。パーティション行は
+  デバイス名の前方一致で親ディスクのボリューム ID を引き当てる。
+  UUID を持つ行のみ比較対象
+- **空対応表は FAIL**: before/after のどちらかが 0 行の場合、
+  Xen 世代等で SERIAL からボリューム ID を特定できない構成として FAIL
+  （空同士の diff が PASS になる穴を防止）
+- OS リリースは `/etc/redhat-release` の完全一致
+
+## 6. 状態ファイル仕様
+
+### 6.1 `work/<旧インスタンスID>/`（CloudShell 側）
+
+| ファイル | 生成 | 内容 | 主な利用先 |
+|---|---|---|---|
+| `instance.json` | 01 | 旧 EC2 の describe-instances 全量 | 03（Name 参照）、04（IP・タグ期待値） |
+| `instance_type.json` / `key_name.json` / `iam_instance_profile.json` / `ebs_optimized.json` / `monitoring.json` / `placement.json` / `metadata_options.json` / `credit_specification.json` | 01 | 新 EC2 起動時に再現する属性 | 03（run-instances 引数）、04（期待値） |
+| `enis.json` | 01 | ENI の ID・DeviceIndex・AttachmentId・DeleteOnTermination・プライマリ IP・SG（DeviceIndex 順） | 03（保全・起動・DOT 復元）、04 |
+| `block_devices.json` | 01 | EBS の DeviceName・VolumeId・DeleteOnTermination（EBS のみ） | 03（保全・移設・DOT 復元）、04 |
+| `root_device_name.json` | 01 | 旧ルートデバイス名 | 03（ルート付け替え）、04 |
+| `tags.json` / `usage_operation.json` / `boot_mode.json` | 01 | タグ・課金コード・BootMode | 03・04 |
+| `disable_api_termination.json` / `disable_api_stop.json` | 01 | 終了/停止保護の元値 | 03（解除・復元）、04 |
+| `shutdown_behavior.json` / `maintenance_options.json` / `private_dns_name_options.json` | 01 | シャットダウン動作・メンテナンス・プライベート DNS 名のオプション | 03（run-instances 引数）、04 |
+| `cpu_options.json` | 01 | タイプ標準値との差分がある場合の CoreCount/ThreadsPerCore。標準値なら `null` | 03（条件付き run-instances 引数）、04 |
+| `capacity_reservation.json` | 01 | CapacityReservationSpecification | 03（run-instances 引数）、04 |
+| `user_data.b64.txt` | 01 | UserData の base64。未設定なら空ファイル | 03（`COPY_USER_DATA=true` 時）、04 |
+| `new_ami_boot_mode.txt` / `instance_boot_mode.txt` | 01 | 正規化済み BootMode（記録用） | 人間の確認用 |
+| `backup_ami_id.txt` / `backup_created_at.txt` | 02 | バックアップ AMI ID・作成時刻 | 03（ガード）、切り戻し |
+| `new_instance_run.json` / `new_instance_id.txt` | 03 | run-instances 応答・新インスタンス ID | 04、手動復旧 |
+| `new_instance_before_attach.json` / `new_root_device_name.txt` / `discarded_root_volume_id.txt` | 03 | アタッチ前の新 EC2 describe・新ルート名・破棄予定ボリューム ID | 手動復旧・破棄ルート削除 |
+| `new_instance_after_switch.json` | 03 | 切替完了後の新 EC2 describe | 記録用 |
+| `verify_*.json` | 04 | 検証時の正規化済み比較データ | 差分調査用 |
+
+### 6.2 `ec2-side/work/<ホスト>/`（踏み台側）
+
+| ファイル | 生成 | 内容 |
+|---|---|---|
+| `{before,after}_lsblk.txt` | collect | lsblk の KEY="value" ペア出力（UUID 比較の主情報） |
+| `{before,after}_blkid.txt` | collect | blkid 出力（補助情報。空許容） |
+| `{before,after}_os_release.txt` | collect | `/etc/redhat-release` |
+| `{before,after}_volume_uuid_map.txt` | compare | 「vol-xxx UUID」のソート済み対応表 |
+
+## 7. 検証仕様
+
+### 7.1 04_verify.sh の判定項目
+
+| # | 項目 | 判定 |
+|---|---|---|
+| 1 | プライマリプライベート IP | 完全一致 |
+| 2 | ENI の ID・DeviceIndex・DeleteOnTermination | 全件一致（DeviceIndex 順で正規化比較） |
+| 3 | EBS の VolumeId・DeviceName・DeleteOnTermination | 全件一致。旧ルートのデバイス名のみ新ルート名への差し替えを期待値として許容 |
+| 4 | タグ | `aws:` 予約タグを除き完全一致 |
+| 5 | インスタンスタイプ | 完全一致 |
+| 6 | **UsageOperation** | 新値が空でなく、**旧値から変化していること**。`EXPECTED_NEW_USAGE_OPERATION` 設定時はその値との完全一致も必須 |
+| 7 | MetadataOptions（HttpTokens・HttpEndpoint） | 一致 |
+| 8 | IamInstanceProfile.Arn | 一致（両方なしも一致扱い） |
+| 9 | EbsOptimized・Monitoring.State・KeyName | 一致 |
+| 10 | 終了保護・停止保護 | describe-instance-attribute の実値が旧値と一致 |
+| 11 | InstanceInitiatedShutdownBehavior | describe-instance-attribute の実値が保存値と一致 |
+| 12 | MaintenanceOptions.AutoRecovery | 保存値が非 null の場合に一致。null は INFO でスキップ |
+| 13 | PrivateDnsNameOptions | 保存値が非 null の場合にキー順を正規化して一致。null は INFO でスキップ |
+| 14 | CpuOptions（CoreCount・ThreadsPerCore） | `instance.json` の旧値と新 describe の値が常に一致 |
+| 15 | CapacityReservationSpecification | 保存値が非 null の場合にキー順を正規化して一致。null は INFO でスキップ |
+| 16 | UserData | `COPY_USER_DATA=true` なら base64 完全一致。false かつ保存値が非空なら引き継いでいない旨を INFO 表示 |
+
+補足: 検証環境（test-env）は新旧とも PAYG のため #6 は FAIL が期待値
+（`test-env/README.md` 参照)。
+
+### 7.2 OS 内実測検証（compare_disk_info.sh）
+
+| 項目 | 判定 |
+|---|---|
+| EBS ボリューム ID ごとのファイルシステム UUID | before/after の対応表が完全一致（空対応表は FAIL） |
+| `/etc/redhat-release` | 完全一致（旧 OS ディスクで起動している証跡） |
+
+## 8. 安全ガード一覧
+
+| ガード | 実装箇所 | 防止する事故 |
+|---|---|---|
+| targets.txt の ID 形式・重複検証 | lib（処理開始前） | 不正 ID による対象単位の失敗、二重処理 |
+| 切替済み対象の prepare 再実行禁止 | 01 | 正常ベースラインの上書き破壊 |
+| 検証先行・書き込み後行 | 01 | 失敗した prepare による既存ベースラインの部分破壊 |
+| 非対応構成の検出（§3.2） | 01 | 起動失敗・構成の暗黙変化・データ消失 |
+| Spot 検出 | 01 | 非対応の購入形態をオンデマンド起動へ暗黙変更する事故 |
+| BootMode 互換性マトリクス | 01 | 起動不能な新 EC2 の作成 |
+| stale バックアップ ID の事前削除 | 02 | 発行失敗時に古い AMI が復旧点として誤採用される |
+| 全入力ファイルの存在・JSON 検証 | 03（破壊操作前） | terminate 後の入力不備による長時間停止 |
+| NEW_AMI・バックアップ AMI の再検証（SourceInstanceId 照合含む） | 03（破壊操作前） | deregister 済み AMI・他対象のバックアップでの切替強行 |
+| 確認プロンプト | 03 | 意図しない破壊的操作 |
+| 停止後の EBS/ENI 現物再照合 | 03（terminate 前） | prepare 後に追加されたリソースの巻き添え削除 |
+| `DeleteOnTermination=false` 化 | 03（terminate 前） | terminate と同時の EBS/ENI 削除 |
+| 保護設定の ERR trap 復元 | 03（terminate 前まで） | 失敗後に保護解除されたまま放置 |
+| client token | 03 | run-instances 応答喪失時の新 EC2 迷子・二重起動 |
+| アタッチ完了の厳密判定 | lib/03 | アタッチ未完了での起動進行 |
+| 終端状態の即時失敗 | lib | 到達不能な待機をタイムアウトまで隠す |
+| before 証跡の上書き保護・原子的収集 | collect | 切替前証跡の消失・空ファイル化 |
+| 空 UUID 対応表の FAIL 化 | compare | 比較不能構成での見せかけ PASS |
+
+## 9. 終了コードとエラー時の状態
+
+### 9.1 終了コード
+
+| コード | 意味 |
+|---|---|
+| 0 | 全対象成功 |
+| 1 | 1 台以上失敗（成功分は処理済み）、または設定・対象一覧の全体エラー |
+| 2 | collect_disk_info.sh の引数誤り |
+
+### 9.2 途中失敗時の状態と復旧
+
+03 の失敗位置により旧 EC2 の状態が異なる。**いずれの場合も EBS・ENI はデータごと保全される**
+（terminate 前は DOT=false 化とデタッチが先行し、terminate 後は既にインスタンスから独立しているため）。
+
+| 失敗位置 | 旧 EC2 | 復旧方法 |
+|---|---|---|
+| terminate 前 | stopped で残存 | 保護復元＋（デタッチ済みなら）再アタッチ＋起動（runbook 参照） |
+| terminate 後〜run 前 | 消失 | 保全済み ENI/EBS でステップ 7 以降を手動実行（runbook 参照） |
+| run 応答喪失 | 消失 | client token で新 EC2 を特定して手動継続（runbook 参照） |
+| attach 以降 | 消失 | `new_instance_id.txt` 等を参照して手動継続（runbook 参照） |
+| 全滅時の最終手段 | — | バックアップ AMI から復旧（README「切り戻し概要」参照） |
+
+## 10. セキュリティ・運用上の考慮
+
+- 必要権限は EC2 のフル操作相当（describe/start/stop/terminate/run-instances、
+  create-image、ボリューム・ENI・タグ操作、instance-attribute 変更）。
+  IAM PassRole は IAM インスタンスプロファイル付き対象の切替に必要
+- `ec2-side/ssh.env`・秘密鍵・`work/` 配下の状態ファイルは環境情報を含むため
+  リポジトリにコミットしない（`.gitignore` 済み）
+- 02 の reboot、03 の停止〜2/2 チェック完了（実測 6〜8 分/台）はサービス停止を伴う。
+  停止時間帯の調整は運用側の責務
+- 検証完了後の手動作業: 破棄予定ルートボリューム（`DeleteAfterVerification=true` タグ）の削除、
+  バックアップ AMI の保持期間管理
+
+## 11. 変更履歴
+
+| コミット | 内容 |
+|---|---|
+| `0e48096` | 初版（スクリプト一式） |
+| `6aad608` | 批判的レビュー反映（安全ガード・検証強化。§8 の大半を追加） |
+| `c736fa1` | test-env の cleanup 存在判定修正・README 注記 |
+| `30154d9` | 再検証結果をレポートに追記 |
+| `c3b020b` | 仕様書 SPEC.md 新規作成 |
+| `c58e30e` | 引き継ぎ属性の拡充（shutdown behavior・MaintenanceOptions・PrivateDnsNameOptions・CPU options・CapacityReservation・UserData opt-in）＋ Spot 検出 |
