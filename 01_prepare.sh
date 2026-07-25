@@ -8,7 +8,9 @@ set -euo pipefail
 # root_device_name.json, placement.json, ebs_optimized.json, monitoring.json, metadata_options.json, tags.json,
 # usage_operation.json, boot_mode.json, disable_api_termination.json, disable_api_stop.json, credit_specification.json,
 # shutdown_behavior.json, maintenance_options.json, private_dns_name_options.json, cpu_options.json,
-# capacity_reservation.json, user_data.b64.txt, new_ami_boot_mode.txt, instance_boot_mode.txt。
+# capacity_reservation.json, user_data.b64.txt, new_ami_boot_mode.txt, instance_boot_mode.txt,
+# before_instance.json, before_volumes.json, before_enis.json（切替前後の手動 diff 用 describe 全文）,
+# 01_prepare.log, timings_01_prepare.tsv。
 # ディスクUUIDとOSバージョンの実測検証は、踏み台EC2側の ec2-side/ で実施する。
 
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
@@ -183,7 +185,28 @@ process_target() {
   printf '%s\n' "$image_boot" > "$dir/new_ami_boot_mode.txt"
   printf '%s\n' "$instance_boot" > "$dir/instance_boot_mode.txt"
 
-  # --- ステップ5: 取得結果の要約を表示 ---
+  # --- ステップ5: 切替前後の手動 diff 用に describe 全文を保存 ---
+  # 上の状態ファイル群は切替に必要な属性だけを抜き出したものなので、想定外の差分まで確認できるように
+  # instance/volume/ENI の describe 全文も残す。切替後の同形式は 04_verify.sh が after_*.json に保存する。
+  # フィールドは間引かず、normalize_describe_json でキー順と配列順だけを安定させる。
+  local -a eni_ids=()
+  local enis_json
+  printf '%s\n' "$instance_json" | normalize_describe_json instances > "$dir/before_instance.json"
+  if ((${#volume_ids[@]} > 0)); then
+    # Multi-Attach 検査で取得済みの describe-volumes をそのまま再利用する。
+    printf '%s\n' "$volumes_json" | normalize_describe_json volumes > "$dir/before_volumes.json"
+  else
+    jq -n '{Volumes: []}' > "$dir/before_volumes.json"
+  fi
+  mapfile -t eni_ids < <(jq -r '.NetworkInterfaces[]?.NetworkInterfaceId // empty' <<<"$instance")
+  if ((${#eni_ids[@]} > 0)); then
+    enis_json=$(aws_json ec2 describe-network-interfaces --network-interface-ids "${eni_ids[@]}")
+    printf '%s\n' "$enis_json" | normalize_describe_json enis > "$dir/before_enis.json"
+  else
+    jq -n '{NetworkInterfaces: []}' > "$dir/before_enis.json"
+  fi
+
+  # --- ステップ6: 取得結果の要約を表示 ---
   local ip volume_count
   ip=$(jq -r '.PrivateIpAddress // "-"' <<<"$instance")
   volume_count=$(jq 'length' "$dir/block_devices.json")

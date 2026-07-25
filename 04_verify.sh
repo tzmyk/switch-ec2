@@ -5,7 +5,9 @@ set -euo pipefail
 # 役割: 新 EC2 が旧 EC2 のIP、ENI、EBS、タグ、インスタンスタイプを維持し、UsageOperation が切り替わったことを確認する。
 # 前提: 01_prepare.sh と 03_switch.sh 済み。各対象の prepare 状態ファイルと new_instance_id.txt が存在すること。
 # 生成する状態ファイル: verify_new_instance.json, verify_old_enis.normalized.json, verify_new_enis.normalized.json,
-# verify_expected_volumes.json, verify_actual_volumes.json, verify_old_tags.normalized.json, verify_new_tags.normalized.json。
+# verify_expected_volumes.json, verify_actual_volumes.json, verify_old_tags.normalized.json, verify_new_tags.normalized.json,
+# after_instance.json, after_volumes.json, after_enis.json（01_prepare.sh の before_*.json と手動 diff する describe 全文）,
+# 04_verify.log, timings_04_verify.tsv。
 # ディスクUUIDとOSバージョンの実測検証は、踏み台EC2上で ec2-side/compare_disk_info.sh を実行して確認する。
 
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
@@ -62,6 +64,27 @@ process_target() {
   new_desc=$(aws_json ec2 describe-instances --instance-ids "$new_instance_id")
   new_file="$dir/verify_new_instance.json"
   printf '%s\n' "$new_desc" > "$new_file"
+
+  # --- ステップ0: 切替前後の手動 diff 用に describe 全文を保存 ---
+  # 01_prepare.sh の before_*.json と対になる after_*.json を作る。ボリューム/ENI の ID は新インスタンスの
+  # describe から取るため、破棄済みの新AMIルートは含まれず、before 側と同じ集合になって diff しやすい。
+  local -a after_volume_ids=() after_eni_ids=()
+  local after_volumes_json after_enis_json
+  printf '%s\n' "$new_desc" | normalize_describe_json instances > "$dir/after_instance.json"
+  mapfile -t after_volume_ids < <(jq -r '.Reservations[0].Instances[0].BlockDeviceMappings[]?.Ebs.VolumeId // empty' <<<"$new_desc")
+  if ((${#after_volume_ids[@]} > 0)); then
+    after_volumes_json=$(aws_json ec2 describe-volumes --volume-ids "${after_volume_ids[@]}")
+    printf '%s\n' "$after_volumes_json" | normalize_describe_json volumes > "$dir/after_volumes.json"
+  else
+    jq -n '{Volumes: []}' > "$dir/after_volumes.json"
+  fi
+  mapfile -t after_eni_ids < <(jq -r '.Reservations[0].Instances[0].NetworkInterfaces[]?.NetworkInterfaceId // empty' <<<"$new_desc")
+  if ((${#after_eni_ids[@]} > 0)); then
+    after_enis_json=$(aws_json ec2 describe-network-interfaces --network-interface-ids "${after_eni_ids[@]}")
+    printf '%s\n' "$after_enis_json" | normalize_describe_json enis > "$dir/after_enis.json"
+  else
+    jq -n '{NetworkInterfaces: []}' > "$dir/after_enis.json"
+  fi
 
   printf '\n=== %s -> %s 検証 ===\n' "$old_instance_id" "$new_instance_id"
 
@@ -224,8 +247,13 @@ process_target() {
     report_info "UserData は引き継いでいない（COPY_USER_DATA=false）"
   fi
 
-  # --- ステップ8: OS 内実測検証の案内 ---
+  # --- ステップ8: OS 内実測検証と手動 diff の案内 ---
   report_info "ディスクUUIDとOSバージョンの実測検証は踏み台EC2上で ec2-side/compare_disk_info.sh を実行して確認すること"
+  report_info "切替前後の describe 全文の手動 diff:"
+  report_info "  diff -u $dir/before_instance.json $dir/after_instance.json"
+  report_info "  diff -u $dir/before_volumes.json $dir/after_volumes.json"
+  report_info "  diff -u $dir/before_enis.json $dir/after_enis.json"
+  report_info "  想定される差分の一覧は README.md の「切替前後 describe の想定 diff」を参照すること"
 
   # --- ステップ9: 対象単位の検証サマリ ---
   if [[ "$verify_failed" == "0" ]]; then

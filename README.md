@@ -59,6 +59,7 @@ vi targets.txt
 - `EXPECTED_NEW_USAGE_OPERATION`: 新 EC2 に期待する UsageOperation（例: `RunInstances:00g0`）。空なら、新値が空でなく旧値から変化したことだけを検証します。
 - `WORK_DIR`: 状態ファイル保存先
 - `WAIT_*_TIMEOUT`: 各種待機タイムアウト秒
+- `MAX_PARALLEL`: デフォルト `4`。`03_switch.sh --parallel`（同時数を省略した場合）で使う同時実行数です。EC2 API のスロットリングと、失敗時に複数台の復旧が同時に必要になる負荷を考えて控えめな値にしています。
 
 `targets.txt` は 1 行 1 インスタンスIDです。空行と `#` コメントは無視されます。
 
@@ -99,6 +100,50 @@ cd ec2-side
 
 状態ファイルは `${WORK_DIR}/<instance-id>/` に保存されます。後続スクリプトは前段の状態ファイルを必須として参照します。
 
+### 03_switch.sh の並行実行モード
+
+`03_switch.sh` だけは複数台を並行処理できます。既定は従来どおり逐次で、`--parallel` を明示したときだけ並行になります。
+
+```bash
+./03_switch.sh --parallel        # config.env の MAX_PARALLEL 台まで同時実行
+./03_switch.sh --parallel=2      # 2 台まで同時実行
+./03_switch.sh --parallel 2      # 同上
+```
+
+1 台あたりの所要時間はほぼ全部が EC2 の停止・terminate・起動・2/2 ステータスチェックの待ち時間なので、並行化すると総所要時間は台数比例から「最も遅い1台分＋順番待ち」に近づきます。
+
+並行モードの挙動と注意点:
+
+- **確認プロンプトは開始前に 1 回だけ。** 対象ごとに `/dev/tty` から読むと入力が競合するため、fan-out 前に全対象の read-only 事前確認（状態ファイル・新AMI・バックアップAMI）を通してから、対象一覧を提示して 1 回だけ確認します。ここで 1 台でも検証に失敗すれば破壊的操作は 1 台も実行されません。`--yes` を併用すれば確認を省略できます。
+- **失敗時は複数台の復旧が同時に必要になり得ます。** `03_switch.sh` は terminate 発行後のリランに対応していません。並行台数を増やすほど、同時に手動復旧 runbook を適用する対象が増えます。初回や本番では小さい値から試してください。
+- **ログは対象別に分離されます。** 画面には全対象のログが `[<インスタンスID>]` 付きで混ざって流れますが、`${WORK_DIR}/<instance-id>/03_switch.log` を読めば 1 台分の流れだけを追えます。
+- 対象ごとの処理は独立した子プロセスとして起動されます（内部オプション `--single-target-confirmed` を使用）。これは bash の errexit が条件文脈でサブシェルへ抑止伝播し、途中失敗を見逃す挙動を避けるためです。
+
+### ログと所要時間の計測
+
+全スクリプト共通で、ログは `[日時] [+経過秒] [レベル] [対象ID] メッセージ` 形式です。経過秒はそのプロセスの開始からの秒数です（並行モードの子プロセスでは、その対象の処理開始からの秒数になります）。
+
+ログは画面（stderr）と同時に `${WORK_DIR}/<instance-id>/<スクリプト名>.log` へ追記されます。
+
+`03_switch.sh` はステップごとの所要時間を計測し、対象の切替完了時に内訳を表示します。同じ内容は `${WORK_DIR}/<instance-id>/timings_03_switch.tsv`（`ステップ名<TAB>秒` の TSV）に保存されるので、メンテナンスウィンドウの見積りや逐次/並行の比較に使えます。
+
+```
+[INFO] [i-0abc] 切替所要時間 内訳: i-0abc -> i-0xyz
+  step1_disable_protection             0s
+  step2_stop_old                      43s
+  step2b_drift_check                   2s
+  step3_dot_false                      3s
+  step4_detach_ebs                    28s
+  step5_terminate_old                112s
+  step6_run_new                       95s
+  step7_stop_new                      41s
+  step8_detach_discard_root           22s
+  step9_attach_old_ebs                18s
+  step10_restore_dot                   5s
+  step11_start_new                   260s
+  TOTAL                              629s
+```
+
 ## 各ステップ
 
 ### 01_prepare.sh
@@ -113,6 +158,8 @@ cd ec2-side
 - 新 AMI と旧インスタンスの BootMode 一致
 - Spot、placement group、Dedicated Host、マルチネットワークカード、hibernation、Nitro Enclaves、Multi-Attach EBS を使用していないこと
 - インスタンスストアがないこと（`ALLOW_INSTANCE_STORE_LOSS=true` の明示的な opt-in を除く）
+
+さらに、切替前後の手動 diff 用に `describe` の全文を `before_instance.json` / `before_volumes.json` / `before_enis.json` として保存します（後述の「切替前後 describe の手動 diff」を参照）。
 
 ディスクUUIDとOSバージョンのベースライン取得は CloudShell 側では行いません。踏み台EC2上で `ec2-side/collect_disk_info.sh before` を実行して保存します。
 
@@ -167,8 +214,70 @@ cd ec2-side
 - CapacityReservationSpecification の正規化比較（保存値が null の場合はスキップ）
 - `COPY_USER_DATA=true` の場合は UserData の base64 完全一致
 
+あわせて、切替後の `describe` 全文を `after_instance.json` / `after_volumes.json` / `after_enis.json` として保存します（後述の「切替前後 describe の手動 diff」を参照）。
+
 ディスクUUIDとOSバージョンの実測検証は、踏み台EC2上で `ec2-side/collect_disk_info.sh after` と `ec2-side/compare_disk_info.sh` を実行して確認します。
 UUID対応表が before/after のどちらかで空の場合、Xen世代など NVMe SERIAL から EBS ボリュームIDを特定できない構成として FAIL にします。
+
+## 切替前後 describe の手動 diff
+
+`04_verify.sh` の項目別チェックは「見るべき項目を見る」検証です。それとは別に、**想定していない箇所が変化していないか**を目視で確認するため、instance / volume / ENI の `describe` 全文を切替前後で保存しています。
+
+| 取得タイミング | ファイル |
+| --- | --- |
+| 切替前（`01_prepare.sh`） | `before_instance.json` / `before_volumes.json` / `before_enis.json` |
+| 切替後（`04_verify.sh`） | `after_instance.json` / `after_volumes.json` / `after_enis.json` |
+
+いずれも `${WORK_DIR}/<instance-id>/` に保存されます。フィールドは一切間引いておらず、`jq -S` によるキー順ソートと、AWS が順序を保証しない配列（`BlockDeviceMappings`、`NetworkInterfaces`、`SecurityGroups`、`Tags`、`Attachments` など）の ID 順ソートだけを適用しているので、そのまま `diff` が取れます。
+
+```bash
+diff -u work/<old-instance-id>/before_instance.json work/<old-instance-id>/after_instance.json
+diff -u work/<old-instance-id>/before_volumes.json  work/<old-instance-id>/after_volumes.json
+diff -u work/<old-instance-id>/before_enis.json     work/<old-instance-id>/after_enis.json
+```
+
+volume / ENI は「新インスタンスに実際に付いているもの」を対象に取得するため、破棄した新AMI由来ルートは含まれず、before 側と同じ集合になります。
+
+### 切替前後 describe の想定 diff
+
+以下は切替の設計上**必ず、または環境により変化する**箇所です。これ以外に差分が出た場合は想定外なので、原因を確認してください。
+
+instance（`before_instance.json` → `after_instance.json`）:
+
+| キー | 変化する理由 |
+| --- | --- |
+| `InstanceId` | 新 EC2 に置き換わるため |
+| `LaunchTime` | 新 EC2 の起動時刻 |
+| `ImageId` | 起動元が `NEW_AMI_ID` になるため |
+| `ClientToken` | `switch-ec2-<旧インスタンスID>` が入る |
+| `ReservationId` / `RequesterId` | 新しい RunInstances の予約 |
+| `BlockDeviceMappings[].Ebs.AttachTime` | 新 EC2 へのアタッチ時刻 |
+| `NetworkInterfaces[].Attachment.AttachmentId` / `AttachTime` | ENI の再アタッチ |
+| `UsageOperation` / `UsageOperationUpdateTime` | ライセンス切替の本来の目的。旧 PAYG から新 AMI 由来の値へ変化する |
+| `AmiLaunchIndex` / `StateTransitionReason` | 新規起動に伴い再設定される |
+| 旧ルートの `BlockDeviceMappings[].DeviceName` | 旧ルート名と新 AMI の `RootDeviceName` が異なる場合のみ（例 `/dev/sda1` → `/dev/xvda`） |
+| `PrivateDnsName` / `PrivateDnsNameOptions` 関連 | 新インスタンスIDで再生成される環境がある |
+| `BootMode` / `CurrentInstanceBootMode` | 新 AMI の BootMode に従う（`uefi-preferred` AMI など） |
+| `aws:` 予約タグ | ユーザーがコピーできないため引き継がれない |
+
+volumes（`before_volumes.json` → `after_volumes.json`）:
+
+| キー | 変化する理由 |
+| --- | --- |
+| `Attachments[].InstanceId` | 新 EC2 に付け替わるため |
+| `Attachments[].AttachTime` | 再アタッチ時刻 |
+| `Attachments[].Device` | 旧ルートのみ、新 `RootDeviceName` に合わせる場合 |
+| `State` | 取得タイミングにより `in-use` 以外が見えることがある |
+
+eni（`before_enis.json` → `after_enis.json`）:
+
+| キー | 変化する理由 |
+| --- | --- |
+| `Attachment.AttachmentId` / `AttachTime` / `InstanceId` / `InstanceOwnerId` | 新 EC2 への再アタッチ |
+| `Status` | 取得タイミングにより変化 |
+| `Association` 系 | Elastic IP の再関連付けがある場合 |
+
+参考として、検証環境（同一構成・同一 AZ）で実測した際の差分は `InstanceId` / `LaunchTime` / `ImageId` / `ClientToken` / `ReservationId` / `AttachTime` / `AttachmentId` / `UsageOperationUpdateTime` のみでした。
 
 ## OS内想定作業（スクリプト対象外・本番手順に組み込むこと）
 

@@ -125,6 +125,7 @@ UserData（`COPY_USER_DATA=true` の opt-in）、t2/t3/t3a/t4g の CreditSpecifi
 | `COPY_USER_DATA` | `false` | `true` で旧 EC2 の UserData を引き継ぐ。新インスタンス ID 検知後に cloud-init が再実行するため、冪等性確認済みの場合のみ有効化 |
 | `EXPECTED_NEW_USAGE_OPERATION` | 空 | 04 の期待値判定（§7.1）。空なら「変化したこと」のみ判定 |
 | `WORK_DIR` | `./work` | 状態ファイル保存先 |
+| `MAX_PARALLEL` | `4` | `03_switch.sh --parallel`（同時数省略時）の同時実行台数。EC2 API のスロットリングと同時復旧負荷を考慮した既定値。逐次が既定なので `--parallel` 未指定なら未使用 |
 | `WAIT_IMAGE_AVAILABLE_TIMEOUT` | 3600 | AMI available 待機タイムアウト（秒）。ポーリング間隔 30 秒 |
 | `WAIT_INSTANCE_STATE_TIMEOUT` | 1800 | インスタンス状態待機（秒）。間隔 15 秒 |
 | `WAIT_VOLUME_STATE_TIMEOUT` | 1800 | ボリューム状態待機（秒）。間隔 10 秒 |
@@ -152,9 +153,31 @@ UserData（`COPY_USER_DATA=true` の opt-in）、t2/t3/t3a/t4g の CreditSpecifi
 ### 5.1 共通仕様（lib/common.sh）
 
 - 全スクリプト `set -euo pipefail`。エラーは `die`（ログ＋非ゼロ return）で伝播
+  - `03_switch.sh` のみ `set -eEuo pipefail`。`-E`（errtrace）が無いと、`process_target` が仕掛ける
+    ERR トラップ（terminate 前の失敗で旧 EC2 の保護を復元する）が関数内の失敗で発火しないため
+- **ログ（`log_info`/`log_warn`/`log_error`）**: 形式は
+  `[日時+TZ] [+経過秒] [レベル] [対象ID] メッセージ`。出力先は stderr と `LOG_FILES` の各ファイル。
+  経過秒はプロセス開始（ライブラリ読込時）からの秒数
+- **時間計測（`timer_start`/`timer_end`/`timings_summary`）**: 名前付きタイマーで区間所要秒を計測し、
+  ログへ出力しつつ `TIMINGS_FILE`（`名前<TAB>秒` の TSV）へ追記。`timings_summary` が内訳と TOTAL を表示。
+  未開始タイマーの `timer_end` は警告のみで処理を止めない
+- **対象別ログ・計測の設定（`setup_target_logging`）**: 対象ごとに
+  `WORK_DIR/<対象ID>/<スクリプト名>.log`（追記）と `timings_<スクリプト名>.tsv`（対象単位で作り直し）を設定
+- **describe 正規化（`normalize_describe_json`）**: 種別（`instances`/`volumes`/`enis`）ごとに、
+  フィールドを増減させずキー順（`jq -S`）と AWS が順序を保証しない配列の順序だけを安定化する。
+  切替前後の全文 diff（§6.1 の `before_*`/`after_*`）を成立させるための正規化
 - **対象一覧処理（`run_targets`）**: 対象を 1 台ずつサブシェル（`set -eEuo pipefail`）で処理。
   1 台の失敗は記録して次の対象へ進み、最後に成功/失敗サマリを表示。
   失敗が 1 台でもあれば終了コード 1
+- **並行対象一覧処理（`run_targets_parallel`）**: `03_switch.sh --parallel` 専用。
+  対象ごとに**独立した子プロセス**を最大 N 個まで起動し、`wait` で個別に終了コードを回収する。
+  サマリと終了コードの契約は `run_targets` と同じ
+  - サブシェルではなく子プロセスにするのは、bash が `if`/`||` の条件文脈で errexit を抑止し、
+    その抑止がサブシェルへ伝播して内側の `set -e` を無効化するため（`$-` では検出できない）。
+    破壊的操作の途中失敗を見逃さないよう、プロセス境界で errexit の状態を切り離す
+  - 同時実行数の制御は `jobs -rp` のポーリング。この関数以外のバックグラウンドジョブがない前提
+  - `run_targets`/`run_targets_parallel` はともに `local -` でシェルオプション変更を関数内に閉じる
+    （内部の `set +e`/`set -e` が呼び出し元へ漏れないようにするため）
 - **AWS CLI ラッパー（`aws_json`/`aws_text`）**: `--output` とリージョンを共通化し、
   stdin を `/dev/null` に切り離す（エラー時の auto-prompt が対象一覧を吸い込む事故の防止）
 - **確認プロンプト（`confirm_or_exit`）**: 破壊的操作前に `yes` 入力を要求。
@@ -223,22 +246,42 @@ UserData（`COPY_USER_DATA=true` の opt-in）、t2/t3/t3a/t4g の CreditSpecifi
 3. バックアップ AMI の `available` と `SourceInstanceId` タグが処理対象と一致することの確認
 4. 確認プロンプト（`--yes` で省略可）
 
-**切替シーケンス**:
+1〜3 は `preflight_target` として関数化されており、AWS 側は describe のみで変更を行わない。
 
-| # | 処理 | 補足 |
-|---|---|---|
-| 1 | 終了保護・停止保護を一時無効化（有効な場合のみ） | ERR trap を設定。**terminate 発行前に失敗した場合は保護を元の値へ自動復元** |
-| 2 | 旧 EC2 を停止 | |
-| 3 | **現物再照合**: 停止後の実際の EBS（VolumeId+DeviceName）と ENI（ID+DeviceIndex）が prepare 時と完全一致することを確認 | 不一致なら die（prepare 後の構成変更検出。この時点なら旧 EC2 は無傷で復旧可能） |
-| 4 | 全 EBS・全 ENI の `DeleteOnTermination=false` | terminate 時の巻き添え削除防止 |
-| 5 | 全 EBS をデタッチし `available` を待機 | |
-| 6 | 旧 EC2 を terminate、全 ENI の `available` を待機 | 以降 ERR trap 解除（保護復元は不能なため） |
-| 7 | 新 EC2 を起動 | 旧 ENI を DeviceIndex 維持で指定。`--client-token switch-ec2-<旧ID>`（応答喪失時に describe のフィルタで新 EC2 を特定可能）。§3.3 の属性を再指定。標準値と異なる CPU options のみ指定し、UserData は opt-in 時だけ `fileb://` で指定 |
-| 8 | 新 EC2 を停止 | |
-| 9 | 新 AMI 由来ルートをデタッチし、破棄予定タグを付与 | タグ: `Purpose=switch-ec2-discarded-root`、`DeleteAfterVerification=true`、`SourceOldInstanceId`、`NewInstanceId`。**削除はしない**（検証完了後に手動削除） |
-| 10 | 旧 EBS を新 EC2 へアタッチ | 旧ルートのみ**新 AMI の RootDeviceName** にアタッチ（AMI 世代間の `/dev/sda1` と `/dev/xvda` の差異を吸収）。他は元のデバイス名。attached 完了を厳密判定 |
-| 11 | EBS・ENI の `DeleteOnTermination` を prepare 時の値へ復元 | |
-| 12 | 新 EC2 を起動し 2/2 ステータスチェック OK を待機。停止保護を復元 | 終了保護は起動時に指定済み |
+**実行方式**:
+
+| 方式 | 起動方法 | 確認プロンプト | 対象処理の単位 |
+|---|---|---|---|
+| 逐次（既定） | 引数なし | 対象ごとに 1 回 | サブシェル（`run_targets`） |
+| 並行 | `--parallel[=N]`（N 省略時は `MAX_PARALLEL`） | **fan-out 前に 1 回だけ** | 子プロセス（`run_targets_parallel`） |
+
+- 並行モードは fan-out 前に**全対象へ `preflight_target` を実施**し、その後 1 回だけ確認を取る。
+  1 台でも事前検証に失敗すれば破壊的操作は 1 台も実行されない
+- 子プロセスは内部オプション `--single-target-confirmed <対象ID>` で起動される（確認済みを表す）。
+  子プロセスでも `preflight_target` を再実行する（describe のみで冪等。逐次モードと同じ
+  「確認直前の状態で検証する」保証を保つため）
+- `N` は 1 以上の整数。1 なら逐次と同じ経路になる
+
+**切替シーケンス**（タイマー名は `timings_03_switch.tsv` のキー。コード内のステップ番号に対応するため、
+本表の # とは 1 つずれる箇所がある）:
+
+| # | タイマー名 | 処理 | 補足 |
+|---|---|---|---|
+| 1 | `step1_disable_protection` | 終了保護・停止保護を一時無効化（有効な場合のみ） | ERR trap を設定。**terminate 発行前に失敗した場合は保護を元の値へ自動復元** |
+| 2 | `step2_stop_old` | 旧 EC2 を停止 | |
+| 3 | `step2b_drift_check` | **現物再照合**: 停止後の実際の EBS（VolumeId+DeviceName）と ENI（ID+DeviceIndex）が prepare 時と完全一致することを確認 | 不一致なら die（prepare 後の構成変更検出。この時点なら旧 EC2 は無傷で復旧可能） |
+| 4 | `step3_dot_false` | 全 EBS・全 ENI の `DeleteOnTermination=false` | terminate 時の巻き添え削除防止 |
+| 5 | `step4_detach_ebs` | 全 EBS をデタッチし `available` を待機 | |
+| 6 | `step5_terminate_old` | 旧 EC2 を terminate、全 ENI の `available` を待機 | 以降 ERR trap 解除（保護復元は不能なため） |
+| 7 | `step6_run_new` | 新 EC2 を起動し `running` を待機 | 旧 ENI を DeviceIndex 維持で指定。`--client-token switch-ec2-<旧ID>`（応答喪失時に describe のフィルタで新 EC2 を特定可能）。§3.3 の属性を再指定。標準値と異なる CPU options のみ指定し、UserData は opt-in 時だけ `fileb://` で指定 |
+| 8 | `step7_stop_new` | 新 EC2 を停止 | |
+| 9 | `step8_detach_discard_root` | 新 AMI 由来ルートをデタッチし、破棄予定タグを付与 | タグ: `Purpose=switch-ec2-discarded-root`、`DeleteAfterVerification=true`、`SourceOldInstanceId`、`NewInstanceId`。**削除はしない**（検証完了後に手動削除） |
+| 10 | `step9_attach_old_ebs` | 旧 EBS を新 EC2 へアタッチ | 旧ルートのみ**新 AMI の RootDeviceName** にアタッチ（AMI 世代間の `/dev/sda1` と `/dev/xvda` の差異を吸収）。他は元のデバイス名。attached 完了を厳密判定 |
+| 11 | `step10_restore_dot` | EBS・ENI の `DeleteOnTermination` を prepare 時の値へ復元 | |
+| 12 | `step11_start_new` | 新 EC2 を起動し 2/2 ステータスチェック OK を待機。停止保護を復元 | 終了保護は起動時に指定済み |
+
+対象の切替完了時に `timings_summary` が内訳と TOTAL を表示する。並行モードでは対象単位の総所要時間
+（タイマー名 `target_total`）も記録する。
 
 **リラン非対応**: 途中失敗後の同一対象への再実行はサポートしない（設計判断）。
 失敗フェーズ別の復旧は README「手動復旧 runbook」に従う。
@@ -300,6 +343,10 @@ OS リリースの完全一致検証。
 | `new_instance_before_attach.json` / `new_root_device_name.txt` / `discarded_root_volume_id.txt` | 03 | アタッチ前の新 EC2 describe・新ルート名・破棄予定ボリューム ID | 手動復旧・破棄ルート削除 |
 | `new_instance_after_switch.json` | 03 | 切替完了後の新 EC2 describe | 記録用 |
 | `verify_*.json` | 04 | 検証時の正規化済み比較データ | 差分調査用 |
+| `before_instance.json` / `before_volumes.json` / `before_enis.json` | 01 | 切替前の instance・EBS・ENI の describe 全文。`normalize_describe_json` でキー順と配列順のみ安定化（フィールドの増減なし） | `after_*` との手動 diff（§7.3） |
+| `after_instance.json` / `after_volumes.json` / `after_enis.json` | 04 | 切替後の同形式。volume・ENI は新 EC2 に実際に付いているものを対象とするため、`before_*` と同じ集合になる | `before_*` との手動 diff（§7.3） |
+| `<スクリプト名>.log` | 01/02/03/04 | 対象単位のログ（追記）。画面出力と同内容 | 障害調査 |
+| `timings_<スクリプト名>.tsv` | 01/02/03/04 | `名前<TAB>秒` の所要時間。対象単位で実行ごとに作り直す。ステップ単位の計測は 03 のみ | 所要時間の見積り・逐次/並行の比較 |
 
 ### 6.2 `ec2-side/work/<ホスト>/`（踏み台側）
 
@@ -343,6 +390,19 @@ OS リリースの完全一致検証。
 | EBS ボリューム ID ごとのファイルシステム UUID | before/after の対応表が完全一致（空対応表は FAIL） |
 | `/etc/redhat-release` | 完全一致（旧 OS ディスクで起動している証跡） |
 
+### 7.3 切替前後 describe の手動 diff（自動判定なし）
+
+§7.1 は「見るべき項目を見る」検証であり、**想定していない箇所が変化していないこと**は保証しない。
+これを人間が確認するため、instance・EBS・ENI の describe 全文を切替前後で保存する（§6.1 の
+`before_*.json` / `after_*.json`）。判定は自動化せず、運用者が `diff -u` で確認する。
+
+- 保存形式: フィールドの増減なし。`jq -S` によるキー順ソートと、AWS が順序を保証しない配列
+  （`BlockDeviceMappings`・`NetworkInterfaces`・`SecurityGroups`・`Tags`/`TagSet`・`Attachments`・
+  `Groups`・`PrivateIpAddresses`・`Ipv6Addresses`・`ProductCodes`）の ID 順ソートのみを適用
+- 想定される差分の一覧（instance / volumes / eni それぞれ）は README「切替前後 describe の想定 diff」
+  に記載する。ここに無い差分が出た場合は想定外として原因調査する
+- `04_verify.sh` は実行末尾に diff コマンドを `[INFO]` で案内する
+
 ## 8. 安全ガード一覧
 
 | ガード | 実装箇所 | 防止する事故 |
@@ -357,6 +417,9 @@ OS リリースの完全一致検証。
 | 全入力ファイルの存在・JSON 検証 | 03（破壊操作前） | terminate 後の入力不備による長時間停止 |
 | NEW_AMI・バックアップ AMI の再検証（SourceInstanceId 照合含む） | 03（破壊操作前） | deregister 済み AMI・他対象のバックアップでの切替強行 |
 | 確認プロンプト | 03 | 意図しない破壊的操作 |
+| 並行モードの fan-out 前一括事前検証 | 03（並行時） | 1 台の検証漏れに気付かないまま複数台の破壊的操作を開始する |
+| 対象処理をサブシェルではなく子プロセスで実行 | lib（並行時） | errexit 抑止の伝播による途中失敗の見逃し（停止失敗のまま terminate へ進む等） |
+| `set -eEuo pipefail`（errtrace） | 03 | ERR trap が関数内の失敗で発火せず保護復元が動かない |
 | 停止後の EBS/ENI 現物再照合 | 03（terminate 前） | prepare 後に追加されたリソースの巻き添え削除 |
 | `DeleteOnTermination=false` 化 | 03（terminate 前） | terminate と同時の EBS/ENI 削除 |
 | 保護設定の ERR trap 復元 | 03（terminate 前まで） | 失敗後に保護解除されたまま放置 |
@@ -397,7 +460,9 @@ OS リリースの完全一致検証。
 - `ec2-side/ssh.env`・秘密鍵・`work/` 配下の状態ファイルは環境情報を含むため
   リポジトリにコミットしない（`.gitignore` 済み）
 - 02 の reboot、03 の停止〜2/2 チェック完了（実測 6〜8 分/台）はサービス停止を伴う。
-  停止時間帯の調整は運用側の責務
+  停止時間帯の調整は運用側の責務。所要時間の実測は `timings_03_switch.tsv`（§6.1）で確認する
+- 並行モード（`--parallel`）は総所要時間を短縮するが、失敗時に複数台の手動復旧が同時に必要になる。
+  EC2 API のスロットリングも増えるため、`MAX_PARALLEL` は小さい値から検証する
 - 検証完了後の手動作業: 破棄予定ルートボリューム（`DeleteAfterVerification=true` タグ）の削除、
   バックアップ AMI の保持期間管理
 
@@ -411,3 +476,4 @@ OS リリースの完全一致検証。
 | `30154d9` | 再検証結果をレポートに追記 |
 | `c3b020b` | 仕様書 SPEC.md 新規作成 |
 | `c58e30e` | 引き継ぎ属性の拡充（shutdown behavior・MaintenanceOptions・PrivateDnsNameOptions・CPU options・CapacityReservation・UserData opt-in）＋ Spot 検出 |
+| 未コミット | ログへの経過秒付与とファイル保存、03 のステップ所要時間計測（§5.1・§6.1）、03 の並行実行モード `--parallel[=N]`（§5.4）、切替前後 describe 全文の保存と手動 diff（§6.1・§7.3）、03 の errtrace 有効化（§8） |
