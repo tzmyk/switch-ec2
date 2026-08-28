@@ -40,7 +40,7 @@ RHEL の PAYG（Pay As You Go）ライセンスで稼働中の EC2 を、ELC（E
 - **インスタンス ID は変わる。** cloud-init が新規インスタンスと判定するため、
   OS 内事前作業（SSH ホスト鍵保持・ホスト名保持）が必要（README「OS内想定作業」参照）。
 - **切替後は RHUI が使えなくなる。** PAYG 用リポジトリは ELC インスタンスで認可されないため、
-  `subscription-manager` の再登録が必要（同上）。
+  サブスクリプションの再登録が必要（本案件では Satellite を使用。手順は別途）。
 
 ## 2. システム構成
 
@@ -48,8 +48,7 @@ RHEL の PAYG（Pay As You Go）ライセンスで稼働中の EC2 を、ELC（E
 
 | 環境 | 役割 | 使用コンポーネント | 必要条件 |
 |---|---|---|---|
-| CloudShell（または同等の bash 環境） | AWS API 操作の全て | `01`〜`04`、`lib/common.sh` | AWS CLI v2、`jq`、admin 相当権限 |
-| 踏み台 EC2 | 対象 EC2 の OS 内実測 | `ec2-side/` | 対象への SSH 到達性。`jq` 不要（bash/ssh/awk/diff/sort のみ） |
+| CloudShell（または同等の bash 環境） | AWS API 操作の全て | `01`〜`06`、`lib/common.sh` | AWS CLI v2、`jq`、admin 相当権限 |
 
 ### 2.2 コンポーネント一覧
 
@@ -60,10 +59,10 @@ RHEL の PAYG（Pay As You Go）ライセンスで稼働中の EC2 を、ELC（E
 | `02_backup.sh` | バックアップ AMI の作成（2フェーズ: 発行→待機） |
 | `03_switch.sh` | 切替本体（破壊的操作を含む） |
 | `04_verify.sh` | AWS API 側の切替後検証 |
-| `ec2-side/collect_disk_info.sh` | 対象 EC2 の lsblk/blkid/os-release を SSH で収集 |
-| `ec2-side/compare_disk_info.sh` | before/after の UUID 対応表と OS リリースを比較 |
+| `05_rollback.sh` | バックアップ AMI のスナップショットからの切り戻し（破壊的操作を含む） |
+| `06_verify_rollback.sh` | AWS API 側の切り戻し後検証 |
 | `config.env` / `targets.txt` | CloudShell 側の設定・対象一覧（`.example` から作成） |
-| `ec2-side/ssh.env` / `hosts.txt` | 踏み台側の SSH 設定・対象一覧（`.example` から作成） |
+| `docs/operator.html` / `docs/developer.html` | 人間向け参照ドキュメント（操作手順 / 内部構造）。実装判断の根拠は本書と `README.md` を優先 |
 | `test-env/` | 検証専用 Terraform 環境（本番手順外・リポジトリ管理外） |
 
 ### 2.3 データフロー
@@ -73,8 +72,7 @@ RHEL の PAYG（Pay As You Go）ライセンスで稼働中の EC2 を、ELC（E
 02_backup  ──→ work/<旧ID>/backup_ami_id.txt ─────────┤
                                                        └─→ 04_verify が期待値として使用
 03_switch  ──→ work/<旧ID>/new_instance_id.txt ほか ────→ 04_verify が対象特定に使用
-collect(before) ─→ ec2-side/work/<host>/before_*.txt ──→ compare が比較
-collect(after)  ─→ ec2-side/work/<host>/after_*.txt ───→ compare が比較
+05_rollback ─→ work/<旧ID>/rollback_instance_id.txt ほか ─→ 06_verify_rollback が対象特定に使用
 ```
 
 ## 3. 対応範囲
@@ -137,24 +135,13 @@ UserData（`COPY_USER_DATA=true` の opt-in）、t2/t3/t3a/t4g の CreditSpecifi
 - 1 行 1 インスタンス ID。空行・`#` コメント行は無視。前後空白は除去
 - 全行が `^i-[0-9a-f]+$` に一致しない場合、または重複がある場合は**処理開始前に全体エラー**
 
-### 4.3 ssh.env / hosts.txt（踏み台側）
-
-| 変数 | デフォルト | 仕様 |
-|---|---|---|
-| `SSH_USER` | `ec2-user` | 対象 EC2 のログインユーザー |
-| `SSH_KEY` | 空 | 秘密鍵パス。空なら `-i` を付けない |
-| `SSH_PORT` | `22` | SSH ポート |
-| `SSH_OPTS` | 空 | 追加 ssh オプション（空白区切り。複雑な値は ssh_config へ） |
-
-`hosts.txt` は 1 行 1 ホスト（IP/ホスト名）。空行・コメント・前後空白の扱いは targets.txt と同じ。
-
 ## 5. 処理仕様
 
 ### 5.1 共通仕様（lib/common.sh）
 
 - 全スクリプト `set -euo pipefail`。エラーは `die`（ログ＋非ゼロ return）で伝播
-  - `03_switch.sh` のみ `set -eEuo pipefail`。`-E`（errtrace）が無いと、`process_target` が仕掛ける
-    ERR トラップ（terminate 前の失敗で旧 EC2 の保護を復元する）が関数内の失敗で発火しないため
+  - `03_switch.sh` と `05_rollback.sh` は `set -eEuo pipefail`。`-E`（errtrace）が無いと、`process_target` が仕掛ける
+    ERR トラップ（terminate 前の失敗で対象 EC2 の保護を復元する）が関数内の失敗で発火しないため
 - **ログ（`log_info`/`log_warn`/`log_error`）**: 形式は
   `[日時+TZ] [+経過秒] [レベル] [対象ID] メッセージ`。出力先は stderr と `LOG_FILES` の各ファイル。
   経過秒はプロセス開始（ライブラリ読込時）からの秒数
@@ -293,32 +280,51 @@ UserData（`COPY_USER_DATA=true` の opt-in）、t2/t3/t3a/t4g の CreditSpecifi
 - 対象ごとに `[PASS]`/`[FAIL]`/`[INFO]` を出力し、1 項目でも FAIL なら対象 FAIL
 - 読み取り専用（AWS 側の変更は行わない）
 
-### 5.6 ec2-side/collect_disk_info.sh
+### 5.6 05_rollback.sh
 
-**目的**: 対象 EC2 の OS 内情報（lsblk・blkid・os-release）を SSH で実測収集。
+**目的**: `02_backup.sh` のバックアップ AMI から PAYG 相当の復旧 EC2 を起動し、ELC 新 EC2 を終了する。
 
-- 引数: `before|after [--force]`。不正時は usage を表示し終了コード 2
-- 収集項目: `lsblk -nP -b -o NAME,SERIAL,UUID,FSTYPE,SIZE`（主情報・必須）、
-  `blkid`（補助・空許容）、`/etc/redhat-release`（必須）
-- **原子的収集**: 一時ファイルへ収集し、SSH 成功かつ必須ファイル非空を確認後に `mv` で確定
-  （接続失敗による証跡の空ファイル化を防止）
-- **before 上書き保護**: 既存の `before_*.txt` が 1 つでもあるホストは既定でエラー。
-  `--force` 指定時のみ警告付きで上書き（切替後の誤実行による証跡破壊の防止）
-- ssh は `-n` で stdin を切り離す（ホスト一覧ループの吸い込み防止）
+**方式**: バックアップ AMI の BDM をそのまま使い、全 EBS を AMI スナップショットから新規作成する
+完全復元（方式B）。ELC 新 EC2 に付く EBS は使わず `available` で残置し、保全 ENI は
+DeviceIndex 維持で復旧 EC2 に再利用する。データは AMI 取得時点へ巻き戻る。逐次実行のみで、
+`--target <旧ID>` を複数指定可能。`--parallel` は持たない。
 
-### 5.7 ec2-side/compare_disk_info.sh
+**事前検証**: 二重実行禁止、01〜03 の状態ファイルと `new_instance_after_switch.json`、
+バックアップ AMI の available・SourceInstanceId・Architecture・BootMode・旧 UsageOperation、
+BDM の DeviceName 集合・全 SnapshotId・全スナップショット completed、ELC 新 EC2 の状態、
+既知 EBS と ENI の現物構成をすべて破壊操作前に確認する。追加 EBS は既定 die、環境変数
+`ROLLBACK_ALLOW_EXTRA_VOLUMES=true` の場合だけ警告して DOT=false 化・デタッチまで行いタグは付けない。
 
-**目的**: before/after の「EBS ボリューム ID → ファイルシステム UUID」対応表と
-OS リリースの完全一致検証。
+**処理順序**:
 
-- **対応表の生成**: lsblk の `SERIAL`（NVMe では `vol0abc...` 形式）を
-  EBS ボリューム ID `vol-0abc...` に変換。パーティション行は
-  デバイス名の前方一致で親ディスクのボリューム ID を引き当てる。
-  UUID を持つ行のみ比較対象
-- **空対応表は FAIL**: before/after のどちらかが 0 行の場合、
-  Xen 世代等で SERIAL からボリューム ID を特定できない構成として FAIL
-  （空同士の diff が PASS になる穴を防止）
-- OS リリースは `/etc/redhat-release` の完全一致
+1. read-only preflight と、巻き戻り時点・失われる期間・残置 EBS を含む確認
+2. ELC 新 EC2 の終了/停止保護を一時解除し停止
+3. 現物の全 EBS/ENI の DOT=false 化を describe-instances と describe-network-interfaces でアサート
+4. 現物の全 EBS をデタッチして available を待機
+5. ELC 新 EC2 を terminate し全 ENI の available を待機
+6. client token `switch-ec2-rollback-<旧ID>` と保全 ENI を指定しバックアップ AMI から起動
+7. running と 2/2 ステータス OK を待機
+8. EBS/ENI の DOT を01の値へ復元
+9. 停止保護を復元
+10. 既知の保全 EBS に `Purpose=switch-ec2-rollback-preserved` と UUID 重複警告タグを付与（自動削除しない）
+11. 最終 describe と所要時間を保存
+
+terminate 前の失敗は ERR trap が ELC 新 EC2 の保護を復元する。terminate 後は不可逆であり、
+README の手動復旧 runbook に従う。
+
+### 5.7 06_verify_rollback.sh
+
+**目的**: 復旧 EC2 が旧ベースラインと一致し、UsageOperation が旧 PAYG 値へ戻ったことを読み取り専用で検証する。
+
+- VolumeId は比較しない。DeviceName・DeleteOnTermination・バックアップ AMI の SnapshotId を照合し、
+  Size・VolumeType・Iops・Throughput・Encrypted は `before_volumes.json` と比較する
+- ENI ID・DeviceIndex・IP、タグ、インスタンスタイプ、起動属性、終了/停止保護、BootMode、UserData を比較する
+- 保全 EBS の available と Purpose タグ、ELC 新 EC2 の terminated、復旧 EC2 の2/2、保全 ENI の全件アタッチを確認する
+- OS 内の状態確認はスコープ外。別途の運用手順に従う
+- **EBS ボリュームのタグは検証対象外**。`create-image` はボリュームのタグをスナップショットへ
+  コピーせず、`run-instances` も AMI 由来ボリュームにタグを付けないため、復旧 EC2 のボリュームは
+  タグが空になる（実機検証で確認済み）。ボリュームタグを条件にした外部の自動化がある場合は
+  `before_volumes.json` を参照して手動で復元する運用とする
 
 ## 6. 状態ファイル仕様
 
@@ -343,19 +349,15 @@ OS リリースの完全一致検証。
 | `new_instance_before_attach.json` / `new_root_device_name.txt` / `discarded_root_volume_id.txt` | 03 | アタッチ前の新 EC2 describe・新ルート名・破棄予定ボリューム ID | 手動復旧・破棄ルート削除 |
 | `new_instance_after_switch.json` | 03 | 切替完了後の新 EC2 describe | 記録用 |
 | `verify_*.json` | 04 | 検証時の正規化済み比較データ | 差分調査用 |
-| `before_instance.json` / `before_volumes.json` / `before_enis.json` | 01 | 切替前の instance・EBS・ENI の describe 全文。`normalize_describe_json` でキー順と配列順のみ安定化（フィールドの増減なし） | `after_*` との手動 diff（§7.3） |
-| `after_instance.json` / `after_volumes.json` / `after_enis.json` | 04 | 切替後の同形式。volume・ENI は新 EC2 に実際に付いているものを対象とするため、`before_*` と同じ集合になる | `before_*` との手動 diff（§7.3） |
-| `<スクリプト名>.log` | 01/02/03/04 | 対象単位のログ（追記）。画面出力と同内容 | 障害調査 |
-| `timings_<スクリプト名>.tsv` | 01/02/03/04 | `名前<TAB>秒` の所要時間。対象単位で実行ごとに作り直す。ステップ単位の計測は 03 のみ | 所要時間の見積り・逐次/並行の比較 |
-
-### 6.2 `ec2-side/work/<ホスト>/`（踏み台側）
-
-| ファイル | 生成 | 内容 |
-|---|---|---|
-| `{before,after}_lsblk.txt` | collect | lsblk の KEY="value" ペア出力（UUID 比較の主情報） |
-| `{before,after}_blkid.txt` | collect | blkid 出力（補助情報。空許容） |
-| `{before,after}_os_release.txt` | collect | `/etc/redhat-release` |
-| `{before,after}_volume_uuid_map.txt` | compare | 「vol-xxx UUID」のソート済み対応表 |
+| `rollback_instance_run.json` / `rollback_instance_id.txt` | 05 | 復旧 run-instances 応答・復旧インスタンス ID | 06、手動復旧 |
+| `rollback_preserved_volume_ids.txt` | 05 | ELC 新 EC2 からデタッチして残置した全 EBS ID | 06、手動削除 |
+| `rollback_instance_after.json` | 05 | 切り戻し完了後の復旧 EC2 describe | 記録用 |
+| `verify_rollback_*.json` | 06 | AMI・復旧 EC2・EBS・ENI・タグの検証用データ | 差分調査用 |
+| `before_instance.json` / `before_volumes.json` / `before_enis.json` | 01 | 切替前の instance・EBS・ENI の describe 全文。`normalize_describe_json` でキー順と配列順のみ安定化（フィールドの増減なし） | `after_*` との手動 diff（§7.2） |
+| `after_instance.json` / `after_volumes.json` / `after_enis.json` | 04 | 切替後の同形式。volume・ENI は新 EC2 に実際に付いているものを対象とするため、`before_*` と同じ集合になる | `before_*` との手動 diff（§7.2） |
+| `after_rollback_instance.json` / `after_rollback_volumes.json` / `after_rollback_enis.json` | 06 | 切り戻し後の正規化済み describe 全文。EBS は全 VolumeId が新規 | `before_*` との手動 diff（§7.3） |
+| `<スクリプト名>.log` | 01〜06 | 対象単位のログ（追記）。画面出力と同内容 | 障害調査 |
+| `timings_<スクリプト名>.tsv` | 01〜06 | `名前<TAB>秒` の所要時間。対象単位で実行ごとに作り直す。03・05・06 はステップ単位 | 所要時間の見積り |
 
 ## 7. 検証仕様
 
@@ -383,14 +385,7 @@ OS リリースの完全一致検証。
 補足: 検証環境（test-env）は新旧とも PAYG のため #6 は FAIL が期待値
 （`test-env/README.md` 参照)。
 
-### 7.2 OS 内実測検証（compare_disk_info.sh）
-
-| 項目 | 判定 |
-|---|---|
-| EBS ボリューム ID ごとのファイルシステム UUID | before/after の対応表が完全一致（空対応表は FAIL） |
-| `/etc/redhat-release` | 完全一致（旧 OS ディスクで起動している証跡） |
-
-### 7.3 切替前後 describe の手動 diff（自動判定なし）
+### 7.2 切替前後 describe の手動 diff（自動判定なし）
 
 §7.1 は「見るべき項目を見る」検証であり、**想定していない箇所が変化していないこと**は保証しない。
 これを人間が確認するため、instance・EBS・ENI の describe 全文を切替前後で保存する（§6.1 の
@@ -402,6 +397,19 @@ OS リリースの完全一致検証。
 - 想定される差分の一覧（instance / volumes / eni それぞれ）は README「切替前後 describe の想定 diff」
   に記載する。ここに無い差分が出た場合は想定外として原因調査する
 - `04_verify.sh` は実行末尾に diff コマンドを `[INFO]` で案内する
+
+### 7.3 06_verify_rollback.sh の判定と手動 diff
+
+判定項目は、プライマリ IP、ENI ID/DeviceIndex/DOT、EBS の DeviceName/DOT/SnapshotId と属性、
+旧 PAYG UsageOperation、タグ、インスタンスタイプ、MetadataOptions、IAM、EbsOptimized、Monitoring、
+KeyName、終了/停止保護、shutdown behavior、MaintenanceOptions、PrivateDnsNameOptions、CpuOptions、
+CapacityReservation、BootMode、保全 EBS、ELC 新 EC2 の terminated、UserData、2/2、保全 ENI である。
+1項目でも不一致なら対象 FAIL。`EXPECTED_NEW_USAGE_OPERATION` は使用しない。
+
+`before_instance.json` → `after_rollback_instance.json` で必ず変わるものは、InstanceId、LaunchTime、
+ImageId、ClientToken、ReservationId、AmiLaunchIndex、StateTransitionReason、全 EBS VolumeId、AttachTime、
+ENI AttachmentId、UsageOperationUpdateTime、PrivateDnsName 関連、`aws:` 予約タグ。詳細は README の
+「切り戻し前後 describe の想定 diff」に記載する。
 
 ## 8. 安全ガード一覧
 
@@ -419,7 +427,7 @@ OS リリースの完全一致検証。
 | 確認プロンプト | 03 | 意図しない破壊的操作 |
 | 並行モードの fan-out 前一括事前検証 | 03（並行時） | 1 台の検証漏れに気付かないまま複数台の破壊的操作を開始する |
 | 対象処理をサブシェルではなく子プロセスで実行 | lib（並行時） | errexit 抑止の伝播による途中失敗の見逃し（停止失敗のまま terminate へ進む等） |
-| `set -eEuo pipefail`（errtrace） | 03 | ERR trap が関数内の失敗で発火せず保護復元が動かない |
+| `set -eEuo pipefail`（errtrace） | 03・05 | ERR trap が関数内の失敗で発火せず保護復元が動かない |
 | 停止後の EBS/ENI 現物再照合 | 03（terminate 前） | prepare 後に追加されたリソースの巻き添え削除 |
 | `DeleteOnTermination=false` 化 | 03（terminate 前） | terminate と同時の EBS/ENI 削除 |
 | 保護設定の ERR trap 復元 | 03（terminate 前まで） | 失敗後に保護解除されたまま放置 |
@@ -428,6 +436,12 @@ OS リリースの完全一致検証。
 | 終端状態の即時失敗 | lib | 到達不能な待機をタイムアウトまで隠す |
 | before 証跡の上書き保護・原子的収集 | collect | 切替前証跡の消失・空ファイル化 |
 | 空 UUID 対応表の FAIL 化 | compare | 比較不能構成での見せかけ PASS |
+| 03 完走証跡・バックアップ AMI/BDM/スナップショット検証 | 05（破壊操作前） | 不完全な AMI や途中切替状態からの復旧強行 |
+| ELC 新 EC2 の EBS/ENI 現物再照合と追加 EBS opt-in | 05（terminate 前） | 運用中の構成変更・追加データの巻き添え削除 |
+| EBS/ENI DOT=false の API 実測アサート | 05（terminate 前） | EBS、プライマリ IP、EIP の永久喪失 |
+| EBS 先行デタッチ | 05 | DOT 反映漏れ時の EBS 削除に対する二重防御 |
+| 二重実行禁止と専用 client token | 05 | 復旧 EC2 の二重起動・03 の冪等性キーとの衝突 |
+| 保全 EBS の UUID 重複警告タグ | 05 | 復旧 EC2 への誤アタッチ・誤マウント |
 
 ## 9. 終了コードとエラー時の状態
 
@@ -437,7 +451,6 @@ OS リリースの完全一致検証。
 |---|---|
 | 0 | 全対象成功 |
 | 1 | 1 台以上失敗（成功分は処理済み）、または設定・対象一覧の全体エラー |
-| 2 | collect_disk_info.sh の引数誤り |
 
 ### 9.2 途中失敗時の状態と復旧
 
@@ -450,14 +463,26 @@ OS リリースの完全一致検証。
 | terminate 後〜run 前 | 消失 | 保全済み ENI/EBS でステップ 7 以降を手動実行（runbook 参照） |
 | run 応答喪失 | 消失 | client token で新 EC2 を特定して手動継続（runbook 参照） |
 | attach 以降 | 消失 | `new_instance_id.txt` 等を参照して手動継続（runbook 参照） |
-| 全滅時の最終手段 | — | バックアップ AMI から復旧（README「切り戻し概要」参照） |
+| 全滅時の最終手段 | — | 方式Bの `05_rollback.sh` でバックアップ AMI のスナップショットから復旧 |
+
+05 の失敗位置別の状態:
+
+| 失敗位置 | ELC 新 EC2 | 復旧方法 |
+|---|---|---|
+| terminate 前 | stopped で残存。ERR trap が保護を復元 | デタッチ済み EBS を再アタッチして起動 |
+| terminate 後〜run 前 | terminated | 保全 ENI とバックアップ AMI から05ステップ6を手動実行 |
+| run 応答喪失 | terminated | client token `switch-ec2-rollback-<旧ID>` で復旧 EC2 を特定し後続を手動継続 |
+| run 成功後 | terminated | `rollback_instance_id.txt` と AWS 現物を確認して DOT・保護・タグ・保存を手動完了 |
+
+既存表の「全滅時の最終手段」は、方式Bを実装した `05_rollback.sh` を使う。保全済み旧 EBS を
+復旧 EC2 へ付け替える旧方式は使用しない。
 
 ## 10. セキュリティ・運用上の考慮
 
 - 必要権限は EC2 のフル操作相当（describe/start/stop/terminate/run-instances、
   create-image、ボリューム・ENI・タグ操作、instance-attribute 変更）。
   IAM PassRole は IAM インスタンスプロファイル付き対象の切替に必要
-- `ec2-side/ssh.env`・秘密鍵・`work/` 配下の状態ファイルは環境情報を含むため
+- `config.env`・`targets.txt`・`work/` 配下の状態ファイルは環境情報を含むため
   リポジトリにコミットしない（`.gitignore` 済み）
 - 02 の reboot、03 の停止〜2/2 チェック完了（実測 6〜8 分/台）はサービス停止を伴う。
   停止時間帯の調整は運用側の責務。所要時間の実測は `timings_03_switch.tsv`（§6.1）で確認する
@@ -465,6 +490,10 @@ OS リリースの完全一致検証。
   EC2 API のスロットリングも増えるため、`MAX_PARALLEL` は小さい値から検証する
 - 検証完了後の手動作業: 破棄予定ルートボリューム（`DeleteAfterVerification=true` タグ）の削除、
   バックアップ AMI の保持期間管理
+- 05 の停止〜復旧 EC2 2/2 完了は約9分/台を見込み、逐次のみ。AMI 取得時点以降の書き込みは失われる
+- 05 後も、保全 EBS、03 由来破棄ルート、バックアップ AMI/スナップショット、opt-in のタグなし追加 EBSを自動削除しない
+- 復旧 EBS と保全 EBS はファイルシステム UUID が同一のため、同一インスタンスへ同時アタッチしない
+- 復旧後はサブスクリプション登録状態（別途の Satellite 手順に従う）と、instance-id をキーにする外部リソースを再確認する
 
 ## 11. 変更履歴
 
@@ -476,4 +505,4 @@ OS リリースの完全一致検証。
 | `30154d9` | 再検証結果をレポートに追記 |
 | `c3b020b` | 仕様書 SPEC.md 新規作成 |
 | `c58e30e` | 引き継ぎ属性の拡充（shutdown behavior・MaintenanceOptions・PrivateDnsNameOptions・CPU options・CapacityReservation・UserData opt-in）＋ Spot 検出 |
-| 未コミット | ログへの経過秒付与とファイル保存、03 のステップ所要時間計測（§5.1・§6.1）、03 の並行実行モード `--parallel[=N]`（§5.4）、切替前後 describe 全文の保存と手動 diff（§6.1・§7.3）、03 の errtrace 有効化（§8） |
+| 未コミット | ログへの経過秒付与とファイル保存、03 のステップ所要時間計測（§5.1・§6.1）、03 の並行実行モード `--parallel[=N]`（§5.4）、切替前後 describe 全文の保存と手動 diff（§6.1・§7.2）、03 の errtrace 有効化（§8） |

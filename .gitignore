@@ -1,15 +1,16 @@
 # 実行時に作成するファイル（.example から作る。環境固有のためコミットしない）
 config.env
 targets.txt
-ec2-side/hosts.txt
-ec2-side/ssh.env
 
 # 実行時の状態ファイル（インスタンスごとの describe JSON・AMI ID 等）
 work/
-ec2-side/work/
+work.bak-*/
 
 # 検証専用の Terraform 環境（環境固有情報・tfstate・検証レポートを含むためリポジトリ管理外）
 test-env/
 
 # Claude Code のローカル設定（実行環境固有のコマンド許可履歴を含む）
 .claude/
+
+# ローカルのツール状態（セッション固有）
+.omc/

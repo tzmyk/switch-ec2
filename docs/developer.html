@@ -1,0 +1,664 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>switch-ec2 開発者ドキュメント</title>
+<style>
+  :root {
+    --bg: #fbfaf8;
+    --surface: #ffffff;
+    --surface-2: #f4f2ef;
+    --text: #1f2328;
+    --muted: #656d76;
+    --border: #dcd8d2;
+    --border-strong: #b9b2a8;
+    --accent: #0f6674;
+    --accent-soft: #e6f2f3;
+    --orange: #c2410c;
+    --orange-soft: #fdf1e8;
+    --danger: #b42318;
+    --danger-soft: #fdecea;
+    --warn: #92620a;
+    --warn-soft: #fdf5e3;
+    --ok: #1a7f47;
+    --ok-soft: #e9f6ee;
+    --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+    --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", "Hiragino Kaku Gothic ProN", "Noto Sans JP", Meiryo, sans-serif;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #15171b; --surface: #1c1f24; --surface-2: #22262c;
+      --text: #e5e8ec; --muted: #9aa3ad; --border: #2e343c; --border-strong: #444c56;
+      --accent: #4fb3c4; --accent-soft: #12262a;
+      --orange: #f97e3c; --orange-soft: #2c1d14;
+      --danger: #f8776a; --danger-soft: #2d1614;
+      --warn: #e0aa3e; --warn-soft: #2a2113;
+      --ok: #4bbd7c; --ok-soft: #14261b;
+    }
+  }
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body { margin: 0; background: var(--bg); color: var(--text); font-family: var(--sans); line-height: 1.8; font-size: 15px; -webkit-text-size-adjust: 100%; }
+  .wrap { display: flex; align-items: flex-start; max-width: 1300px; margin: 0 auto; }
+  nav { position: sticky; top: 0; flex: 0 0 258px; height: 100vh; overflow-y: auto; padding: 28px 18px 40px; border-right: 1px solid var(--border); font-size: 13.5px; }
+  nav .navtitle { font-weight: 700; font-size: 14px; letter-spacing: .04em; color: var(--accent); margin-bottom: 4px; }
+  nav .navsub { color: var(--muted); font-size: 12px; margin-bottom: 18px; }
+  nav a { display: block; color: var(--muted); text-decoration: none; padding: 5px 10px; border-radius: 6px; border-left: 2px solid transparent; }
+  nav a:hover { background: var(--surface-2); color: var(--text); border-left-color: var(--accent); }
+  nav .navgroup { margin-top: 16px; font-size: 11px; text-transform: uppercase; letter-spacing: .08em; color: var(--border-strong); padding: 0 10px 4px; }
+  nav .switchdoc { margin-top: 26px; padding: 12px 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); }
+  nav .switchdoc a { padding: 0; color: var(--orange); font-weight: 600; border: 0; }
+  nav .switchdoc a:hover { background: none; text-decoration: underline; }
+  nav .switchdoc p { margin: 4px 0 0; font-size: 11.5px; color: var(--muted); line-height: 1.6; }
+  main { flex: 1 1 auto; min-width: 0; padding: 36px 40px 120px; }
+  header.page { border-bottom: 2px solid var(--accent); padding-bottom: 20px; margin-bottom: 34px; }
+  header.page .eyebrow { color: var(--accent); font-weight: 700; font-size: 12.5px; letter-spacing: .1em; text-transform: uppercase; }
+  header.page h1 { font-size: 32px; margin: 8px 0 10px; line-height: 1.3; letter-spacing: -.01em; }
+  header.page p.lede { margin: 0; color: var(--muted); font-size: 16px; max-width: 66ch; }
+  h2 { font-size: 22px; margin: 54px 0 14px; padding-bottom: 8px; border-bottom: 1px solid var(--border); letter-spacing: -.01em; scroll-margin-top: 20px; }
+  h3 { font-size: 17px; margin: 30px 0 10px; color: var(--accent); scroll-margin-top: 20px; }
+  h4 { font-size: 14.5px; margin: 22px 0 8px; color: var(--text); }
+  p { margin: 12px 0; max-width: 78ch; }
+  ul, ol { max-width: 78ch; padding-left: 22px; }
+  li { margin: 7px 0; }
+  code { font-family: var(--mono); font-size: .875em; background: var(--surface-2); padding: 2px 6px; border-radius: 4px; border: 1px solid var(--border); }
+  pre { background: var(--surface-2); border: 1px solid var(--border); border-radius: 8px; padding: 14px 16px; overflow-x: auto; font-size: 12.5px; line-height: 1.65; }
+  pre code { background: none; border: 0; padding: 0; font-size: 12.5px; }
+  .tablewrap { overflow-x: auto; margin: 16px 0; }
+  table { border-collapse: collapse; width: 100%; font-size: 13.5px; background: var(--surface); }
+  th, td { border: 1px solid var(--border); padding: 8px 11px; text-align: left; vertical-align: top; }
+  th { background: var(--surface-2); font-weight: 700; white-space: nowrap; }
+  td code, th code { white-space: nowrap; }
+  .callout { border-radius: 8px; padding: 14px 18px; margin: 20px 0; border: 1px solid; border-left-width: 4px; }
+  .callout p:first-child { margin-top: 0; } .callout p:last-child { margin-bottom: 0; }
+  .callout .label { font-weight: 700; font-size: 13px; letter-spacing: .04em; display: block; margin-bottom: 4px; }
+  .danger { background: var(--danger-soft); border-color: var(--danger); } .danger .label { color: var(--danger); }
+  .warn { background: var(--warn-soft); border-color: var(--warn); } .warn .label { color: var(--warn); }
+  .ok { background: var(--ok-soft); border-color: var(--ok); } .ok .label { color: var(--ok); }
+  .info { background: var(--accent-soft); border-color: var(--accent); } .info .label { color: var(--accent); }
+  .src { display: inline-block; font-family: var(--mono); font-size: 11.5px; color: var(--muted); background: var(--surface-2); border: 1px solid var(--border); border-radius: 4px; padding: 1px 7px; margin-left: 6px; font-weight: 400; white-space: nowrap; }
+  figure { margin: 24px 0; }
+  figure svg { display: block; width: 100%; height: auto; max-width: 860px; margin: 0 auto; }
+  figcaption { text-align: center; color: var(--muted); font-size: 13px; margin-top: 8px; }
+  .destructive { color: var(--danger); font-weight: 700; }
+  .readonly { color: var(--ok); font-weight: 700; }
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin: 18px 0; }
+  .card { background: var(--surface); border: 1px solid var(--border); border-radius: 9px; padding: 4px 18px 16px; }
+  .card h4 { margin-top: 16px; }
+  footer { margin-top: 70px; padding-top: 20px; border-top: 1px solid var(--border); color: var(--muted); font-size: 13px; }
+  @media (max-width: 980px) {
+    .wrap { flex-direction: column; }
+    nav { position: static; height: auto; width: 100%; flex-basis: auto; border-right: 0; border-bottom: 1px solid var(--border); }
+    main { padding: 24px 18px 80px; }
+    header.page h1 { font-size: 25px; }
+    .grid2 { grid-template-columns: 1fr; }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+<nav>
+  <div class="navtitle">switch-ec2</div>
+  <div class="navsub">開発者ドキュメント</div>
+  <div class="navgroup">設計</div>
+  <a href="#principle">原理と方式</a>
+  <a href="#components">コンポーネント構成</a>
+  <a href="#dataflow">データフロー</a>
+  <div class="navgroup">実装</div>
+  <a href="#common">lib/common.sh の仕組み</a>
+  <a href="#state">状態ファイル仕様</a>
+  <a href="#switch">03_switch.sh の内部</a>
+  <a href="#rollback">05_rollback.sh の内部</a>
+  <a href="#verify">04 / 06 の検証ロジック</a>
+  <div class="navgroup">堅牢性</div>
+  <a href="#invariants">安全ガードと不変条件</a>
+  <a href="#failure">失敗モデル（中断耐性）</a>
+  <a href="#decisions">設計判断とその理由</a>
+  <div class="navgroup">検証</div>
+  <a href="#tested">実機検証の結果</a>
+  <a href="#extend">拡張・改修時の注意</a>
+  <div class="switchdoc">
+    <a href="operator.html">操作手順書 →</a>
+    <p>実際に作業する人向けの手順・注意点はこちら。</p>
+  </div>
+</nav>
+
+<main>
+<header class="page">
+  <div class="eyebrow">開発者向け</div>
+  <h1>switch-ec2 開発者ドキュメント</h1>
+  <p class="lede">RHEL PAYG の EC2 を ELC/BYOS 系 AMI 起動の EC2 へ置き換える bash スクリプト群の、内部構造・設計判断・失敗モデルの解説。</p>
+</header>
+
+<h2 id="principle">原理と方式</h2>
+
+<h3>解決したい課題</h3>
+<p>EC2 の課金コード（<code>UsageOperation</code>）は <strong>RunInstances 時に指定した AMI で確定し、以後変更できない</strong>。稼働中インスタンスのライセンス種別だけを変える API は存在しない。</p>
+
+<h3>方式</h3>
+<p>この性質を逆手に取る。<strong>「器（インスタンス）を新しく作り、中身（EBS・ENI）を移設する」</strong>。</p>
+<ol>
+  <li>切替先ライセンスの AMI から新 EC2 を起動 → <strong>この瞬間に課金コードが確定する</strong></li>
+  <li>新 AMI 由来のルートボリュームをデタッチして破棄予定にする</li>
+  <li>旧 EC2 の全 EBS（OS ディスク含む）と全 ENI を新 EC2 へ付け替える</li>
+</ol>
+
+<h3>保証される性質と、その根拠</h3>
+<div class="tablewrap">
+<table>
+<thead><tr><th>性質</th><th>根拠</th></tr></thead>
+<tbody>
+<tr><td>OS・データが完全に同一</td><td>EBS ボリュームを<strong>再作成せず現物を移設</strong>する</td></tr>
+<tr><td>ファイルシステム UUID が不変</td><td>同上。<code>fstab</code> の UUID マウントが壊れない</td></tr>
+<tr><td>プライマリ／セカンダリ IP・MAC が不変</td><td>ENI ごと移設する</td></tr>
+<tr><td>Elastic IP が不変</td><td>EIP は ENI に紐付くため ENI 移設に自動追随する</td></tr>
+<tr><td>SG が不変</td><td>SG は ENI の属性</td></tr>
+<tr><td>タグ・インスタンスタイプ・IAM ロール等</td><td>01 で保存した値を 03 の <code>run-instances</code> 引数で再指定する</td></tr>
+</tbody>
+</table>
+</div>
+
+<h3>方式上、避けられない制約</h3>
+<div class="callout danger">
+  <span class="label">旧 EC2 の terminate は必須</span>
+  <p>プライマリ ENI（DeviceIndex 0）は <strong>running/stopped のインスタンスから単独デタッチできない</strong>。同一 IP を引き継ぐ手段は旧 EC2 の terminate 以外に存在しない。<span class="src">03_switch.sh:265</span></p>
+</div>
+<ul>
+  <li><strong>インスタンス ID が変わる。</strong>cloud-init が新規インスタンスと判定するため、OS 内の事前対策（<code>ssh_deletekeys: false</code> / <code>preserve_hostname: true</code>）が必要</li>
+  <li><strong>切替後は RHUI が使えない。</strong>PAYG 用リポジトリは ELC インスタンスで認可されず 403 になる。サブスクリプションの再登録が必須（本案件では Satellite を使用。手順は別途）</li>
+  <li><strong>自動割り当てパブリック IPv4 は引き継げない。</strong>EIP のみが維持される。検証項目にも含まれない</li>
+</ul>
+
+<h2 id="components">コンポーネント構成</h2>
+
+<div class="tablewrap">
+<table>
+<thead><tr><th>ファイル</th><th>役割</th><th>破壊性</th></tr></thead>
+<tbody>
+<tr><td><code>lib/common.sh</code></td><td>設定読込・AWS CLI ラッパー・待機・ログ・対象ループの共通基盤</td><td>—</td></tr>
+<tr><td><code>01_prepare.sh</code></td><td>事前検査とベースライン状態ファイルの保存</td><td class="readonly">読み取りのみ</td></tr>
+<tr><td><code>02_backup.sh</code></td><td>バックアップ AMI 作成（発行→待機の 2 フェーズ）</td><td class="destructive">再起動あり</td></tr>
+<tr><td><code>03_switch.sh</code></td><td>切替本体（11 ステップ）</td><td class="destructive">terminate あり</td></tr>
+<tr><td><code>04_verify.sh</code></td><td>切替後の項目別検証</td><td class="readonly">読み取りのみ</td></tr>
+<tr><td><code>05_rollback.sh</code></td><td>バックアップ AMI からの切り戻し（11 ステップ）</td><td class="destructive">terminate あり</td></tr>
+<tr><td><code>06_verify_rollback.sh</code></td><td>切り戻し後の項目別検証</td><td class="readonly">読み取りのみ</td></tr>
+</tbody>
+</table>
+</div>
+
+<div class="callout info">
+  <span class="label">スクリプトは AWS API 操作のみを行う</span>
+  <p>全スクリプトが <strong>AWS API 操作に専念</strong>し、<strong>対象 EC2 の OS 内には SSM/SSH で一切アクセスしない。</strong>OS 内の事前作業（cloud-init 対策）と事後作業（サブスクリプション再登録）は本スクリプト群のスコープ外で、別途の運用手順が担当する。</p>
+  <p>この分離により、実行環境は CloudShell の AWS 権限だけで完結し、対象 OS の SSH 鍵を CloudShell 側に置く必要がない。</p>
+</div>
+
+<h2 id="dataflow">データフロー</h2>
+
+<figure>
+<svg viewBox="0 0 860 225" role="img" aria-label="スクリプト間の状態ファイル受け渡し">
+  <defs>
+    <marker id="a2" markerWidth="8" markerHeight="8" refX="6.5" refY="3" orient="auto">
+      <path d="M0,0 L0,6 L7.5,3 z" fill="var(--accent)"/>
+    </marker>
+  </defs>
+  <rect x="14" y="20" width="832" height="90" rx="9" fill="var(--accent-soft)" stroke="var(--accent)" stroke-dasharray="4 3"/>
+  <text x="28" y="42" font-size="12" font-weight="700" fill="var(--accent)">work/&lt;旧インスタンスID&gt;/ — 状態ファイル（$HOME 配下に置くこと）</text>
+  <text x="30" y="66" font-size="11.5" font-family="monospace" fill="var(--text)">instance.json / enis.json / block_devices.json / tags.json / placement.json / metadata_options.json …</text>
+  <text x="30" y="86" font-size="11.5" font-family="monospace" fill="var(--text)">backup_ami_id.txt → new_instance_id.txt → discarded_root_volume_id.txt → rollback_instance_id.txt</text>
+  <text x="30" y="103" font-size="11.5" font-family="monospace" fill="var(--muted)">&lt;script&gt;.log / timings_&lt;script&gt;.tsv （即時追記。中断後の到達位置判定に使う）</text>
+
+  <g font-size="12" font-weight="700">
+    <rect x="14" y="150" width="122" height="52" rx="7" fill="var(--surface)" stroke="var(--ok)" stroke-width="1.6"/>
+    <text x="75" y="172" text-anchor="middle" fill="var(--text)">01_prepare</text>
+    <text x="75" y="190" text-anchor="middle" font-size="10.5" font-weight="400" fill="var(--ok)">read-only</text>
+
+    <rect x="158" y="150" width="122" height="52" rx="7" fill="var(--surface)" stroke="var(--warn)" stroke-width="1.6"/>
+    <text x="219" y="172" text-anchor="middle" fill="var(--text)">02_backup</text>
+    <text x="219" y="190" text-anchor="middle" font-size="10.5" font-weight="400" fill="var(--warn)">reboot</text>
+
+    <rect x="302" y="150" width="122" height="52" rx="7" fill="var(--surface)" stroke="var(--danger)" stroke-width="2"/>
+    <text x="363" y="172" text-anchor="middle" fill="var(--text)">03_switch</text>
+    <text x="363" y="190" text-anchor="middle" font-size="10.5" font-weight="400" fill="var(--danger)">terminate</text>
+
+    <rect x="446" y="150" width="122" height="52" rx="7" fill="var(--surface)" stroke="var(--ok)" stroke-width="1.6"/>
+    <text x="507" y="172" text-anchor="middle" fill="var(--text)">04_verify</text>
+    <text x="507" y="190" text-anchor="middle" font-size="10.5" font-weight="400" fill="var(--ok)">read-only</text>
+
+    <rect x="590" y="150" width="122" height="52" rx="7" fill="var(--surface)" stroke="var(--danger)" stroke-width="2"/>
+    <text x="651" y="172" text-anchor="middle" fill="var(--text)">05_rollback</text>
+    <text x="651" y="190" text-anchor="middle" font-size="10.5" font-weight="400" fill="var(--danger)">terminate</text>
+
+    <rect x="734" y="150" width="112" height="52" rx="7" fill="var(--surface)" stroke="var(--ok)" stroke-width="1.6"/>
+    <text x="790" y="172" text-anchor="middle" fill="var(--text)">06_verify</text>
+    <text x="790" y="190" text-anchor="middle" font-size="10.5" font-weight="400" fill="var(--ok)">read-only</text>
+  </g>
+
+  <g stroke="var(--accent)" stroke-width="1.8" fill="none" marker-end="url(#a2)">
+    <path d="M136 176 L154 176"/><path d="M280 176 L298 176"/>
+    <path d="M424 176 L442 176"/><path d="M568 176 L586 176"/>
+    <path d="M712 176 L730 176"/>
+  </g>
+  <g stroke="var(--accent)" stroke-width="1.2" stroke-dasharray="3 3" fill="none" opacity=".65">
+    <path d="M75 150 L75 112"/><path d="M219 150 L219 112"/><path d="M363 150 L363 112"/>
+    <path d="M507 150 L507 112"/><path d="M651 150 L651 112"/><path d="M790 150 L790 112"/>
+  </g>
+
+</svg>
+<figcaption>後続スクリプトは前段の状態ファイルを必須依存として参照する。状態ファイルが失われると復旧不能に近づく。</figcaption>
+</figure>
+
+<h2 id="common">lib/common.sh の仕組み</h2>
+
+<h3>関数カタログ</h3>
+<div class="tablewrap">
+<table>
+<thead><tr><th>関数</th><th>シグネチャ / 挙動</th></tr></thead>
+<tbody>
+<tr><td><code>load_config</code></td><td><code>config.env</code> を source。必須は <code>NEW_AMI_ID</code> のみ。他は <code>: "${VAR:=default}"</code> でデフォルト付与</td></tr>
+<tr><td><code>aws_json</code> / <code>aws_text</code></td><td><code>--region</code> 付与＋<code>--output json|text</code>。<strong><code>&lt;/dev/null</code> で stdin を切り離す</strong>（対象ループ内で aws が stdin を奪うのを防ぐ）</td></tr>
+<tr><td><code>die</code></td><td><code>log_error</code> して <strong><code>return 1</code>（<code>exit</code> ではない）</strong>。<code>set -e</code> が効く文脈から呼ぶ前提</td></tr>
+<tr><td><code>wait_until</code></td><td><code>timeout interval desc predicate args...</code>。<strong>述語が終了コード 2 を返したら「終端到達不能」として即 die</strong>（リトライしない）</td></tr>
+<tr><td><code>instance_state_is</code></td><td>期待が <code>terminated</code> 以外なのに実際が <code>terminated</code> なら rc=2</td></tr>
+<tr><td><code>volume_state_is</code></td><td><code>InvalidVolume.NotFound</code>／<code>error</code>／<code>deleted</code> は rc=2</td></tr>
+<tr><td><code>image_state_is</code></td><td><code>InvalidAMIID.NotFound</code>／<code>failed</code>／<code>deregistered</code> は rc=2</td></tr>
+<tr><td><code>status_ok</code></td><td><code>SystemStatus</code> と <code>InstanceStatus</code> が両方 <code>ok</code>（＝2/2）</td></tr>
+<tr><td><code>read_targets</code></td><td><code>targets.txt</code> をパース。<code>^i-[0-9a-f]+$</code> 検証と重複検出</td></tr>
+<tr><td><code>run_targets</code></td><td>対象ごとにサブシェルで handler 実行。1 台失敗でも続行し、最後にサマリと終了コードを決定</td></tr>
+<tr><td><code>setup_target_logging</code></td><td><code>LOG_PREFIX</code>／<code>LOG_FILES</code>／<code>TIMINGS_FILE</code> を対象別に設定</td></tr>
+<tr><td><code>normalize_describe_json</code></td><td><code>instances|volumes|enis</code> を <code>jq -S</code> ＋配列 ID 順ソートで正規化（フィールドの間引きはしない）</td></tr>
+</tbody>
+</table>
+</div>
+
+<h3>踏まえておくべき落とし穴</h3>
+
+<div class="callout warn">
+  <span class="label">1. run_targets を条件文脈で呼んではいけない</span>
+  <p>bash の <code>errexit</code> は <code>if</code>／<code>||</code> の条件文脈でサブシェルへの抑止が伝播し、<strong>途中失敗を見逃す</strong>。<code>run_targets</code> は必ず <code>main</code> から直接呼ぶこと。<code>lib/common.sh</code> 内にコメントで明記されている。</p>
+</div>
+
+<div class="callout warn">
+  <span class="label">2. die は return であって exit ではない</span>
+  <p><code>set -e</code> が無効化された文脈（条件式の中など）で <code>die</code> を呼ぶと<strong>処理が止まらない</strong>。新規コードを足すときは呼び出し文脈に注意すること。</p>
+</div>
+
+<div class="callout warn">
+  <span class="label">3. 状態ファイルの JSON 検査は false/null を特別扱いする</span>
+  <p><code>jq -e .</code> は <code>false</code> と <code>null</code> に対して終了コード 1 を返す。状態ファイルには <code>disable_api_termination.json</code>（bool）や <code>cpu_options.json</code>（null あり）が含まれるため、この 2 値を正当値として補完するロジックが必要。<span class="src">03_switch.sh:143-157</span></p>
+  <pre><code>if ! jq -e . "$dir/$file" &gt;/dev/null; then
+  jq -e 'select(. == false or . == null) | true' "$dir/$file" &gt;/dev/null \
+    || die "状態ファイルが有効な JSON ではありません: $dir/$file"
+fi</code></pre>
+</div>
+
+<h3>ログと時間計測</h3>
+<p>形式は <code>[日時] [+経過秒] [LEVEL] [対象ID] メッセージ</code>。<code>_log_raw</code> は <strong>tee を使わず <code>printf ... &gt;&gt; file</code> で即時追記</strong>する（PIPE_BUF 以下ならほぼ原子的という前提で、並行書き込み時のロックを避ける設計）。</p>
+<p><strong>即時追記であることは中断時の唯一の手がかりになる。</strong>プロセスが強制終了しても、完了したステップまでのログは必ずファイルに残る。</p>
+
+<h2 id="state">状態ファイル仕様</h2>
+
+<p>すべて <code>${WORK_DIR}/&lt;旧インスタンスID&gt;/</code> 配下。<strong>生成元 → 消費先</strong>の依存関係が全体の骨格になっている。</p>
+
+<h3>01_prepare.sh が生成</h3>
+<div class="tablewrap">
+<table>
+<thead><tr><th>ファイル</th><th>型</th><th>内容 / 消費先</th></tr></thead>
+<tbody>
+<tr><td><code>instance.json</code></td><td>object</td><td><code>describe-instances</code> 全文。Architecture・CpuOptions・Name タグの取得元</td></tr>
+<tr><td><code>enis.json</code></td><td><strong>配列</strong></td><td><code>{NetworkInterfaceId, DeviceIndex, AttachmentId, DeleteOnTermination, PrimaryPrivateIpAddress, Groups}</code>。DeviceIndex 順</td></tr>
+<tr><td><code>block_devices.json</code></td><td><strong>配列</strong></td><td><code>{DeviceName, VolumeId, DeleteOnTermination}</code>。EBS のみ</td></tr>
+<tr><td><code>root_device_name.json</code></td><td>文字列</td><td>例 <code>"/dev/sda1"</code>。旧ルートの識別に使う</td></tr>
+<tr><td><code>tags.json</code></td><td><strong>配列</strong></td><td><code>[{Key, Value}]</code>。<code>aws:</code> 予約タグを含むので使用時に除外する</td></tr>
+<tr><td><code>placement.json</code> / <code>metadata_options.json</code></td><td>object</td><td>describe 形式そのまま。<code>run-instances</code> 用に null 除去して渡す</td></tr>
+<tr><td><code>instance_type.json</code> / <code>key_name.json</code> / <code>ebs_optimized.json</code> / <code>monitoring.json</code></td><td>スカラー/object</td><td><code>run-instances</code> の条件付き引数</td></tr>
+<tr><td><code>iam_instance_profile.json</code></td><td>null / object</td><td><code>{Arn, Id}</code>。Arn が非空なら <code>--iam-instance-profile</code></td></tr>
+<tr><td><code>disable_api_termination.json</code> / <code>disable_api_stop.json</code></td><td>bool</td><td>保護属性。解除と復元の両方で参照</td></tr>
+<tr><td><code>shutdown_behavior.json</code></td><td>文字列</td><td><code>"stop"</code> / <code>"terminate"</code></td></tr>
+<tr><td><code>maintenance_options.json</code> / <code>private_dns_name_options.json</code> / <code>cpu_options.json</code> / <code>capacity_reservation.json</code> / <code>credit_specification.json</code></td><td>null / object</td><td><strong>null あり。</strong>検証時は null ならスキップ</td></tr>
+<tr><td><code>usage_operation.json</code></td><td>文字列</td><td>旧 PAYG 値。04 は「変化したこと」、<strong>06 は「一致すること」</strong>を検証</td></tr>
+<tr><td><code>boot_mode.json</code></td><td>object</td><td><code>{BootMode, CurrentInstanceBootMode}</code></td></tr>
+<tr><td><code>user_data.b64.txt</code></td><td>base64</td><td><code>COPY_USER_DATA=true</code> のときだけ引き継ぐ</td></tr>
+<tr><td><code>before_instance.json</code> / <code>before_volumes.json</code> / <code>before_enis.json</code></td><td>object</td><td>正規化済み describe 全文。手動 diff とボリューム属性検証の正解データ</td></tr>
+</tbody>
+</table>
+</div>
+
+<h3>02 以降が追加生成</h3>
+<div class="tablewrap">
+<table>
+<thead><tr><th>ファイル</th><th>生成元</th><th>役割</th></tr></thead>
+<tbody>
+<tr><td><code>backup_ami_id.txt</code> / <code>backup_created_at.txt</code></td><td>02</td><td>切り戻しの起動元 AMI と巻き戻り時点</td></tr>
+<tr><td><code>new_instance_id.txt</code></td><td>03 ステップ6</td><td>ELC 新 EC2 の ID</td></tr>
+<tr><td><code>new_root_device_name.txt</code> / <code>discarded_root_volume_id.txt</code></td><td>03 ステップ8</td><td><strong>detach の前に書かれる</strong>（後述）</td></tr>
+<tr><td><code>new_instance_after_switch.json</code></td><td>03 ステップ11の最後</td><td><strong>03 完走の証跡。05 の preflight が必須依存する</strong></td></tr>
+<tr><td><code>rollback_instance_id.txt</code></td><td>05 ステップ6</td><td>復旧 EC2 の ID。<strong>存在すると 05 の再実行が禁止される</strong></td></tr>
+<tr><td><code>rollback_preserved_volume_ids.txt</code></td><td>05 ステップ4</td><td><strong>detach の前に書かれる。</strong>残置した ELC 側 EBS の一覧</td></tr>
+<tr><td><code>rollback_instance_after.json</code></td><td>05 ステップ11</td><td>切り戻し後の describe 全文</td></tr>
+</tbody>
+</table>
+</div>
+
+<h2 id="switch">03_switch.sh の内部</h2>
+
+<p><code>set -eEuo pipefail</code>。<strong><code>-E</code>（errtrace）は必須</strong>で、<code>process_target</code> が張る ERR トラップが関数内の失敗で発火するために要る。</p>
+
+<div class="tablewrap">
+<table>
+<thead><tr><th>#</th><th>ステップ</th><th>主な API</th><th>実測</th><th>不変条件・注意</th></tr></thead>
+<tbody>
+<tr><td>0</td><td>preflight</td><td>describe のみ</td><td>—</td><td>状態ファイル 20 種＋AMI の検証。<strong>ここで落ちれば破壊操作はゼロ</strong></td></tr>
+<tr><td>1</td><td>保護解除</td><td><code>modify-instance-attribute</code></td><td>0s</td><td>直前に <code>trap restore_old_protection_on_error ERR</code></td></tr>
+<tr><td>2</td><td>旧 EC2 停止</td><td><code>stop-instances</code></td><td>27〜43s</td><td>—</td></tr>
+<tr><td>2b</td><td>ドリフト検査</td><td>describe</td><td>2〜4s</td><td>EBS/ENI が prepare 時と完全一致するか。<strong>再実行時の安全網としても効く</strong></td></tr>
+<tr><td>3</td><td>DOT=false 化</td><td><code>modify-*-attribute</code></td><td>3〜13s</td><td><strong>terminate 前の最重要ステップ</strong></td></tr>
+<tr><td>4</td><td>全 EBS デタッチ</td><td><code>detach-volume</code></td><td>17〜28s</td><td>DOT=false の取りこぼしに対する二重防御</td></tr>
+<tr><td>5</td><td class="destructive">旧 EC2 terminate</td><td><code>terminate-instances</code></td><td>31〜112s</td><td>発行直後に <code>terminate_issued=true; trap - ERR</code>。<strong>ここから不可逆</strong></td></tr>
+<tr><td>6</td><td>新 EC2 起動</td><td><code>run-instances</code></td><td>7〜95s</td><td>client token <code>switch-ec2-&lt;旧ID&gt;</code> で冪等化</td></tr>
+<tr><td>7</td><td>新 EC2 停止</td><td><code>stop-instances</code></td><td>41〜65s</td><td>ルート差し替えのため</td></tr>
+<tr><td>8</td><td>新 AMI ルート切離し</td><td><code>detach-volume</code>／<code>create-tags</code></td><td>17〜22s</td><td><strong>状態ファイルを detach の前に書く</strong></td></tr>
+<tr><td>9</td><td>旧 EBS アタッチ</td><td><code>attach-volume</code></td><td>16〜18s</td><td>旧ルートは新 EC2 の <code>RootDeviceName</code> に読み替える</td></tr>
+<tr><td>10</td><td>DOT 復元</td><td><code>modify-*-attribute</code></td><td>5〜18s</td><td><strong>ENI の AttachmentId は新 EC2 の現在 describe から取る</strong></td></tr>
+<tr><td>11</td><td>起動と 2/2 確認</td><td><code>start-instances</code></td><td>178〜260s</td><td>最後に停止保護復元と <code>new_instance_after_switch.json</code> 保存</td></tr>
+</tbody>
+</table>
+</div>
+
+<h3>run-instances 引数の組み立て</h3>
+<p>describe 形式には <code>null</code> 値のキーが混ざるため、<code>with_entries(select(.value != null))</code> で除去してから API に渡す。<span class="src">03_switch.sh:283-308</span></p>
+<pre><code>jq '[.[] | {NetworkInterfaceId, DeviceIndex, DeleteOnTermination: false}]' enis.json &gt; ni_file
+jq -n --slurpfile tags tags.json \
+  '[{ResourceType:"instance", Tags: ($tags[0] | map(select(.Key | startswith("aws:") | not)))}]' &gt; tag_file
+jq '{AvailabilityZone, Tenancy} | with_entries(select(.value != null))' placement.json &gt; placement_file</code></pre>
+<p>条件付き引数は 12 種（<code>--key-name</code>／<code>--iam-instance-profile</code>／<code>--ebs-optimized</code>／<code>--monitoring</code>／<code>--disable-api-termination</code>／<code>--credit-specification</code>／<code>--maintenance-options</code>／<code>--private-dns-name-options</code>／<code>--cpu-options</code>／<code>--capacity-reservation-specification</code>／<code>--user-data</code>／<code>--tag-specifications</code>）。<strong>05 はこの組み立てロジックをそのまま流用している</strong>ので、片方を直したらもう片方も確認すること。</p>
+
+<h3>ENI の AttachmentId に関する落とし穴</h3>
+<div class="callout warn">
+  <p><code>enis.json</code> の <code>AttachmentId</code> は<strong>旧 EC2 時代のもので、新 EC2 では無効</strong>。ステップ10 の DOT 復元では新 EC2 の現在 describe から取り直している。<span class="src">03_switch.sh:436-452</span></p>
+  <pre><code>new_desc=$(aws_json ec2 describe-instances --instance-ids "$new_instance_id")
+jq -c '.Reservations[0].Instances[0].NetworkInterfaces[] | {NetworkInterfaceId, AttachmentId: .Attachment.AttachmentId}' &lt;&lt;&lt;"$new_desc" | ...</code></pre>
+</div>
+
+<h2 id="rollback">05_rollback.sh の内部</h2>
+
+<h3>採用方式：AMI スナップショットからの完全復元（方式B）</h3>
+<p>バックアップ AMI の BDM を<strong>そのまま使って</strong>起動する。全 EBS は AMI のスナップショットから新規作成され、<strong>ELC 新 EC2 に付いていた保全済み旧 EBS は使わずに <code>available</code> で残置</strong>する。ENI は保全済みのものを DeviceIndex 維持で再利用して IP を維持する。</p>
+
+<div class="grid2">
+<div class="card">
+<h4>方式B を選んだ結果</h4>
+<ul>
+<li>データは AMI 取得時点まで巻き戻る（切替後の書き込みは失われる）</li>
+<li>03 のステップ7〜9（停止→ルート差し替え→再アタッチ）が<strong>不要</strong>。起動 1 回で完了する</li>
+<li>デバイス名は AMI 由来＝旧 EC2 と同じなので、<strong>ルート名の読み替えが不要</strong></li>
+<li>ボリューム ID が必ず変わるため、<strong>検証ロジックが 04 と別物になる</strong></li>
+</ul>
+</div>
+<div class="card">
+<h4>UsageOperation が戻る理由</h4>
+<p>バックアップ AMI は <code>02_backup.sh</code> が<strong>旧 PAYG インスタンスから <code>create-image</code> したもの</strong>なので、その AMI から起動すれば課金コードは自動的に PAYG に戻る。</p>
+<p>05 の preflight は<strong>起動前に</strong> <code>describe-images</code> の <code>UsageOperation</code> が <code>usage_operation.json</code> と一致することを確認する。「この AMI で本当に PAYG に戻れるか」を破壊操作の前に検証している。</p>
+</div>
+</div>
+
+<h3>ステップ構成</h3>
+<div class="tablewrap">
+<table>
+<thead><tr><th>#</th><th>ステップ</th><th>実測</th><th>03 との違い</th></tr></thead>
+<tbody>
+<tr><td>0</td><td>preflight</td><td>18〜19s</td><td>AMI の BDM／SnapshotId／スナップショット completed、ELC 現物構成のドリフト検査を追加</td></tr>
+<tr><td>1</td><td>保護解除</td><td>0s</td><td>対象が ELC 新 EC2</td></tr>
+<tr><td>2</td><td>ELC 新 EC2 停止</td><td>27〜28s</td><td>—</td></tr>
+<tr><td>3</td><td>DOT=false 化<strong>＋アサート</strong></td><td>24〜30s</td><td><strong>03 に無い追加ガード。</strong>設定後に describe を読み直して全件 false を検証</td></tr>
+<tr><td>4</td><td>全 EBS デタッチ</td><td>17〜25s</td><td>現物列挙。ID を先にファイルへ書く</td></tr>
+<tr><td>5</td><td class="destructive">ELC 新 EC2 terminate</td><td>30〜31s</td><td>—</td></tr>
+<tr><td>6</td><td>復旧 EC2 起動</td><td>6〜7s</td><td>client token は <strong><code>switch-ec2-rollback-&lt;旧ID&gt;</code></strong>（03 と衝突させない）</td></tr>
+<tr><td>7</td><td>running + 2/2</td><td>128〜175s</td><td>03 のステップ7〜10 に相当する処理が不要</td></tr>
+<tr><td>8〜11</td><td>DOT 復元・保護復元・タグ・保存</td><td>27〜38s</td><td>保全 EBS に警告タグを付与</td></tr>
+<tr><td colspan="2"><strong>合計</strong></td><td><strong>303〜327s</strong></td><td>03（396〜629s）より短い</td></tr>
+</tbody>
+</table>
+</div>
+
+<h3>ステップ3 のアサート（05 の心臓部）</h3>
+<div class="callout danger">
+  <span class="label">プライマリ ENI の DOT が true のまま terminate すると IP が永久に失われる</span>
+  <p>03 は <code>modify</code> を発行するだけで結果を確認していない。05 では発行後に <strong><code>describe-instances</code> と <code>describe-network-interfaces</code> の両方</strong>を読み直して検証し、1 つでも <code>true</code> なら terminate 前に <code>die</code> する。<span class="src">05_rollback.sh:294-306</span></p>
+  <pre><code>jq -e '[.Reservations[0].Instances[0].NetworkInterfaces[].Attachment.DeleteOnTermination]
+       | all(. == false)' &lt;&lt;&lt;"$current_desc" &gt;/dev/null \
+  || die "ENI の DeleteOnTermination=false 化に失敗。terminate を中止します。IP 喪失を防ぐためです。"</code></pre>
+</div>
+
+<h3>現物ベースの列挙（追加ボリューム対策）</h3>
+<div class="callout warn">
+  <p>05 は 03 と違い、<strong>ELC で本番稼働したあとに実行される</strong>。運用中の構成変更（障害調査用ボリュームの追加など）が入っている確率が高い。</p>
+  <p>そのため DOT=false 化とデタッチのループは <code>block_devices.json</code> の固定リストではなく<strong>その時点の describe を列挙して回す</strong>。<code>block_devices.json</code> に無い追加ボリュームを見逃すと、DOT=true のまま terminate に巻き込まれて<strong>サイレントに削除される</strong>ため。</p>
+  <p>追加ボリュームを検出したときの既定は <code>die</code>。環境変数 <code>ROLLBACK_ALLOW_EXTRA_VOLUMES=true</code> のときだけ警告して続行し、DOT=false 化とデタッチは行うが<strong>ロールバック用タグは付けない</strong>（オペレータの個別判断に委ねる）。</p>
+</div>
+
+<h3>保全 EBS のタグ</h3>
+<pre><code>Key=Purpose,Value=switch-ec2-rollback-preserved
+Key=DeleteAfterVerification,Value=true
+Key=Warning,Value=DO-NOT-ATTACH-DUPLICATE-FS-UUID
+Key=SourceOldInstanceId / RolledBackFromInstanceId / RollbackInstanceId</code></pre>
+<p><code>Warning</code> タグの理由：<strong>スナップショットはブロックレベルコピーなので、復旧 EC2 のボリュームと保全 EBS はファイルシステム UUID が完全に同一</strong>になる。データ救出目的で同一インスタンスにアタッチすると UUID 重複でマウント不能・誤マウントを起こす。</p>
+
+<div class="callout info">
+  <span class="label"><code>Purpose</code> の文字列は 05 と 06 で共有される</span>
+  <p>05 が書き、06 が照合する。共通ライブラリを新設しない方針のため、両スクリプト冒頭で <code>ROLLBACK_PRESERVED_PURPOSE</code> として変数定義し、相互参照コメントで担保している。<strong>片方だけ変えると検証が空振りする。</strong></p>
+</div>
+
+<h2 id="verify">04 / 06 の検証ロジック</h2>
+
+<p>両者とも <code>report_pass</code> / <code>report_fail</code> / <code>report_info</code> / <code>json_equal</code> をスクリプト内に private に持つ（<code>lib/common.sh</code> には無い）。<code>verify_failed</code> はファイルスコープのグローバルで、<code>run_targets</code> が対象ごとにサブシェルで実行するため対象間で自然にリセットされる。</p>
+
+<h3>06 が 04 と異なる点</h3>
+<div class="tablewrap">
+<table>
+<thead><tr><th>項目</th><th>04_verify.sh</th><th>06_verify_rollback.sh</th></tr></thead>
+<tbody>
+<tr><td><strong>ボリューム</strong></td><td><code>{DeviceName, VolumeId, DeleteOnTermination}</code> の完全一致</td><td><strong>VolumeId を比較しない。</strong><code>{DeviceName, DeleteOnTermination, SnapshotId}</code> で照合し、SnapshotId がバックアップ AMI の BDM と一致することを確認</td></tr>
+<tr><td>ボリューム属性</td><td>—</td><td><code>before_volumes.json</code> と Size／VolumeType／Iops／Throughput／Encrypted を比較（追加項目）</td></tr>
+<tr><td><strong>UsageOperation</strong></td><td>旧値から<strong>変化した</strong>こと</td><td>旧値と<strong>一致する</strong>こと（判定が逆）</td></tr>
+<tr><td>ルートデバイス名</td><td>旧 root → 新 root に読み替えて比較</td><td>読み替え不要（AMI 由来＝旧と同じ）</td></tr>
+<tr><td>後始末の検証</td><td>—</td><td>保全 EBS の available とタグ、ELC 新 EC2 の terminated、2/2、保全 ENI の全件アタッチ（追加項目）</td></tr>
+</tbody>
+</table>
+</div>
+
+<pre><code># 06 の期待値組み立て：block_devices.json のデバイス名に AMI の SnapshotId を突き合わせる
+jq -n --slurpfile bd "$dir/block_devices.json" --slurpfile ami "$dir/verify_rollback_backup_ami.json" '
+  [ $bd[0][] as $d
+    | {DeviceName: $d.DeviceName,
+       DeleteOnTermination: $d.DeleteOnTermination,
+       SnapshotId: ($ami[0].Images[0].BlockDeviceMappings[]
+                    | select(.DeviceName == $d.DeviceName) | .Ebs.SnapshotId)} ]
+  | sort_by(.DeviceName)'</code></pre>
+
+<div class="callout warn">
+  <span class="label">検証環境では 06 の UsageOperation 判定が常に PASS する</span>
+  <p><code>test-env/</code> は新旧どちらも PAYG AMI を使うため、04 の UsageOperation 判定は<strong>FAIL が期待値</strong>、06 の判定は<strong>自明に PASS</strong> する。この項目のロジックの正しさは本番の ELC AMI でしか実証できない。</p>
+</div>
+
+<h2 id="invariants">安全ガードと不変条件</h2>
+
+<h3>terminate 前に必ず成立していること</h3>
+<ol>
+  <li><strong>全 EBS と全 ENI の <code>DeleteOnTermination=false</code> が設定済み</strong>（05 はさらに実測アサート）</li>
+  <li><strong>全 EBS がデタッチされ <code>available</code></strong>（terminate の暗黙デタッチに依存しない二重防御）</li>
+  <li>preflight とドリフト検査を通過している</li>
+</ol>
+
+<h3>状態ファイルは「識別できなくする操作」の前に書く</h3>
+<div class="callout ok">
+  <span class="label">この順序が中断耐性の根幹</span>
+  <p>03 のステップ8 が典型例。デタッチしてタグを付ける<strong>前に</strong> ID をファイルへ落とす。逆順だと、デタッチ直後に中断された場合に「タグも無い <code>available</code> なボリューム」が正体不明で残る。<span class="src">03_switch.sh:394-396</span></p>
+  <pre><code>printf '%s\n' "$new_root_device"  &gt; "$dir/new_root_device_name.txt"
+printf '%s\n' "$discard_volume"   &gt; "$dir/discarded_root_volume_id.txt"
+aws_json ec2 detach-volume --volume-id "$discard_volume" ...   # ← 書き込みの後</code></pre>
+  <p>05 も同様に、デタッチ前に <code>rollback_preserved_volume_ids.txt</code> を書く。</p>
+</div>
+
+<h3>client token による冪等化</h3>
+<p><code>run-instances</code> のレスポンスを受け取る直前で落ちると、状態ファイルに記録されていないインスタンスが存在しうる。client token（<code>switch-ec2-&lt;旧ID&gt;</code> / <code>switch-ec2-rollback-&lt;旧ID&gt;</code>）があるため、<code>describe-instances --filters Name=client-token,...</code> で特定でき、同じトークンでの再発行も二重起動にならない。</p>
+
+<h3>二重実行の禁止</h3>
+<div class="tablewrap">
+<table>
+<thead><tr><th>スクリプト</th><th>ガード</th></tr></thead>
+<tbody>
+<tr><td>01_prepare.sh</td><td><code>new_instance_id.txt</code> があれば die（切替済み対象の prepare 再実行を禁止）</td></tr>
+<tr><td>03_switch.sh</td><td>ステップ2b のドリフト検査が実質的な再実行ガードとして機能する</td></tr>
+<tr><td>05_rollback.sh</td><td><code>rollback_instance_id.txt</code> があれば die。さらに <code>new_instance_after_switch.json</code> の存在を 03 完走証跡として要求</td></tr>
+</tbody>
+</table>
+</div>
+
+<h2 id="failure">失敗モデル（中断耐性）</h2>
+
+<div class="callout danger">
+  <span class="label">CloudShell のセッションタイムアウトが現実的な脅威</span>
+  <p>CloudShell は<strong>キーボード・ポインタ操作がない状態が約 20〜30 分続くとセッションを終了</strong>し、<strong>プロセスの実行は「操作」とみなされない</strong>。03 は 1 台あたり 7〜11 分かかるため、実行中に強制終了されうる。<code>nohup</code>／<code>tmux</code> はコンテナ停止には耐えられない。</p>
+</div>
+
+<h3>キル位置ごとの状態</h3>
+<div class="tablewrap">
+<table>
+<thead><tr><th>キル位置</th><th>旧 EC2</th><th>データ</th><th>復旧方法</th></tr></thead>
+<tbody>
+<tr><td>ステップ1 保護解除中</td><td>running</td><td>無傷</td><td>保護属性を状態ファイルの値へ戻す</td></tr>
+<tr><td>ステップ2 停止待ち</td><td>stopped（API は非同期で継続）</td><td>無傷</td><td><code>start-instances</code>＋保護復元</td></tr>
+<tr><td>ステップ3 DOT=false 中</td><td>stopped</td><td>無傷（DOT が一部 true）</td><td>同上。terminate していないので実害なし</td></tr>
+<tr><td>ステップ4 デタッチ中</td><td>stopped</td><td>無傷（一部 available）</td><td><code>block_devices.json</code> の DeviceName で再アタッチ</td></tr>
+<tr><td>ステップ5 terminate 発行の<strong>直前</strong></td><td>stopped・EBS 全デタッチ済み</td><td>無傷</td><td>再アタッチして起動、または切替を続行</td></tr>
+<tr><td>ステップ5 terminate 発行の<strong>直後</strong></td><td class="destructive">消失</td><td>無傷（DOT=false＋デタッチ済み）</td><td>保全 ENI/EBS でステップ6以降を手動実行</td></tr>
+<tr><td>ステップ6 run-instances 応答喪失</td><td>消失</td><td>無傷</td><td>client token で特定して手動継続</td></tr>
+<tr><td>ステップ7〜10</td><td>消失</td><td>無傷</td><td><code>new_instance_id.txt</code> 等を見て手動継続</td></tr>
+<tr><td>ステップ11 起動・2/2 待ち</td><td>消失</td><td>無傷</td><td>04 で確認後、<code>new_instance_after_switch.json</code> を手動作成</td></tr>
+</tbody>
+</table>
+</div>
+
+<p><strong>「terminate が発行されたか」は曖昧にならない。</strong>旧 ID を <code>describe-instances</code> すれば <code>stopped</code> か <code>shutting-down</code>/<code>terminated</code> かで一意に判別できる。</p>
+
+<h3>中断時に注意が必要な 3 点</h3>
+
+<div class="callout warn">
+  <span class="label">1. ERR トラップはキルでは発火しない</span>
+  <p>03/05 が持つのは <strong>ERR トラップだけ</strong>で、HUP/TERM/INT のトラップは無い。セッション終了はシェルのエラーではないため <code>restore_old_protection_on_error</code> は一切走らず、<strong>保護属性が解除されたまま放置される</strong>。再接続後に手動で戻す必要がある。</p>
+</div>
+
+<div class="callout warn">
+  <span class="label">2. ステップ11 の中断は 05 をブロックする</span>
+  <p><code>new_instance_after_switch.json</code> は<strong>ステップ11 の最後</strong>（最長 178〜260 秒のステップの後）に書かれる。ここで中断されると、切替自体は完了しているのに 05 の preflight が起動を拒否する。04 で完了を確認したうえで <code>describe-instances</code> の結果を手動で保存すれば解消する。</p>
+</div>
+
+<div class="callout warn">
+  <span class="label">3. WORK_DIR が <code>$HOME</code> 配下にあること</span>
+  <p>CloudShell で永続化されるのは <code>$HOME</code>（リージョンごと 1GB）だけ。<code>WORK_DIR</code> の既定は <code>./work</code> で<strong>カレントディレクトリ相対</strong>のため、<code>/tmp</code> 等で作業すると状態ファイルごと消える。<strong>これが CloudShell 運用の単一障害点。</strong></p>
+</div>
+
+<h3>再実行は「安全に死ぬ」</h3>
+<div class="callout ok">
+  <p>運用ルールとしては「中断後はそのまま再実行しない」が正しいが、<strong>実装上は誤って再実行しても壊れない</strong>。</p>
+  <ul>
+    <li>ステップ4 以降で中断 → ドリフト検査が「EBS 構成が変更されている」で die（デタッチ済みボリュームが <code>BlockDeviceMappings</code> から消えているため）</li>
+    <li>terminate 後に中断 → <code>stop-instances</code> が terminated インスタンスで失敗、または <code>instance_state_is</code> が終端状態を検知して die</li>
+    <li>ステップ3 の途中で中断 → 全操作が冪等なので普通に通る</li>
+  </ul>
+  <p>つまり<strong>「再実行して良い場合は通り、いけない場合は破壊前に止まる」</strong>。ドリフト検査が意図せず安全網として機能している。</p>
+</div>
+
+<h2 id="decisions">設計判断とその理由</h2>
+
+<div class="tablewrap">
+<table>
+<thead><tr><th>判断</th><th>理由</th></tr></thead>
+<tbody>
+<tr><td>自動リランに対応しない</td><td>terminate を挟む処理の途中再開は、状態の組み合わせが多すぎて安全に自動判定できない。<strong>人間がログと現物から到達位置を判断する</strong>方が確実</td></tr>
+<tr><td>DOT=false → デタッチ → terminate の順序</td><td>terminate の暗黙デタッチに依存せず、<strong>検証可能で決定的な状態</strong>を作ってから不可逆操作に入るため</td></tr>
+<tr><td>ENI は事前デタッチしない</td><td>プライマリ ENI は単独デタッチ不可。terminate 後の <code>available</code> 待ちに委ねるしかない</td></tr>
+<tr><td>05 は方式B（AMI から完全復元）</td><td>切り戻しは「切替後に問題が出た」場面。ELC 側のディスクを疑う状況もあるため、<strong>既知の正常状態（AMI 取得時点）へ戻す</strong>選択。保全 EBS は残すのでデータ救出は可能</td></tr>
+<tr><td>05/06 は 01〜04 と <code>lib/common.sh</code> を変更しない</td><td>01〜04 は本番検証済み。<code>lib/common.sh</code> は 4 本が実行時に source する共通基盤で、<strong>構文ミス 1 つで道連れに壊れる</strong>。既存コードベース自体が「2 本でしか使わないヘルパは共通化しない」流儀（<code>modify_volume_dot</code> は 03 専用、<code>json_equal</code> は 04 専用）</td></tr>
+<tr><td>05 の client token を分離</td><td>同じトークンだと EC2 の冪等性キーが 03 の起動と衝突し、既存の新 EC2 と同一視される</td></tr>
+<tr><td>05 は並行実行を持たない</td><td>切り戻しは緊急時の操作。中断・失敗時に<strong>手動復旧が必要な対象を増やさない</strong>ことを優先</td></tr>
+<tr><td>破棄ルート・保全 EBS を自動削除しない</td><td>検証完了とデータ救出の判断は人間が行うべき。タグで識別可能にして手動削除に委ねる</td></tr>
+<tr><td>OS 内操作を一切行わない</td><td>実行環境を CloudShell の AWS 権限だけで完結させ、対象 OS の SSH 鍵を持たせないため。OS 内作業は別途の運用手順が担当する</td></tr>
+</tbody>
+</table>
+</div>
+
+<h2 id="tested">実機検証の結果</h2>
+
+<p>2026-08-28、<code>test-env/</code> の Terraform 環境（RHEL 9・t3.small × 2 台、うち 1 台は EBS 3 本構成）で 01→02→03→04→05→06 を実 AWS で通した。</p>
+
+<div class="tablewrap">
+<table>
+<thead><tr><th>工程</th><th>結果</th><th>所要</th></tr></thead>
+<tbody>
+<tr><td>01_prepare.sh</td><td>2 台成功</td><td>83s</td></tr>
+<tr><td>02_backup.sh</td><td>2 台成功</td><td>219s</td></tr>
+<tr><td>03_switch.sh --parallel=2</td><td>2 台成功</td><td>406s</td></tr>
+<tr><td>04_verify.sh</td><td>UsageOperation のみ FAIL（検証環境の期待値）</td><td>—</td></tr>
+<tr><td><strong>05_rollback.sh</strong></td><td><strong>2 台成功・11 ステップ完走</strong></td><td><strong>327s / 303s</strong></td></tr>
+<tr><td><strong>06_verify_rollback.sh</strong></td><td><strong>2 台とも PASS（49 項目・FAIL ゼロ）</strong></td><td>—</td></tr>
+</tbody>
+</table>
+</div>
+
+<h3>実機で確証が取れたこと</h3>
+<ul>
+  <li><code>UsageOperation</code> が <code>RunInstances:0010</code>（旧 PAYG 値）へ復帰</li>
+  <li>プライマリ IP 維持、ENI が DeviceIndex 0 のまま再利用</li>
+  <li>復旧ボリュームは<strong>新 ID だが SnapshotId がバックアップ AMI の BDM と完全一致</strong>（方式B の核心）</li>
+  <li>保全 EBS が <code>available</code>＋タグ付きで残置、ELC 新 EC2 は <code>terminated</code></li>
+  <li>二重実行ガードが AWS を一切変更せず拒否し、失敗時の終了コード 1 も正しく伝播</li>
+</ul>
+
+<h3>実機でしか出なかった発見</h3>
+
+<div class="callout warn">
+  <span class="label">1. EBS ボリュームのタグは引き継がれない</span>
+  <p>切替前のボリュームには <code>Name</code>／<code>Project</code>／<code>Env</code>／<code>Owner</code> タグが付いていたが、AMI スナップショットから作られた復旧ボリュームは<strong>タグが空</strong>だった。<code>create-image</code> はボリュームタグをスナップショットへコピーせず、<code>run-instances</code> も AMI 由来ボリュームにタグを付けない。</p>
+  <p>ボリュームタグを条件にした AWS Backup・DLM・コスト配分タグを使っている場合は切り戻し後に壊れる。<strong>06 はボリュームタグを検証対象にしていない</strong>ので、手動で <code>before_volumes.json</code> から復元する運用が必要。</p>
+</div>
+
+<div class="callout info">
+  <span class="label">2. volumes の <code>Device</code> 差分は並び順の artifact</span>
+  <p>手動 diff でデバイス名の差分が出るが、これは <code>after_rollback_volumes.json</code> がボリューム ID 順にソートされるため。方式B では全 ID が変わるので、データボリュームが複数あると配列内の順序が入れ替わる。<strong>デバイス名の集合が一致していれば正常。</strong></p>
+  <p>06 はデバイス名で対応付けて比較するため、この並び替えの影響を受けない。</p>
+</div>
+
+<h2 id="extend">拡張・改修時の注意</h2>
+
+<h3>触るときに気をつける箇所</h3>
+<ul>
+  <li><strong><code>run-instances</code> の引数組み立ては 03 と 05 で二重化している。</strong>属性を追加するときは両方を直すこと。片方だけだと切り戻し後に属性が欠ける</li>
+  <li><strong><code>ROLLBACK_PRESERVED_PURPOSE</code> は 05（書き手）と 06（読み手）で一致必須。</strong>共通ライブラリを持たない設計上の弱点</li>
+  <li><strong><code>lib/common.sh</code> を変更すると 01〜04 の検証済み前提が崩れる。</strong>変更するなら全スクリプトの再検証が要る</li>
+  <li><strong>新しい引き継ぎ属性を足すときは 01（保存）→ 03/05（再指定）→ 04/06（検証）の 3 か所</strong>がセット</li>
+  <li>述語関数を追加する場合、<code>wait_until</code> の契約（<strong>終端到達不能は rc=2</strong>）に従うこと。従わないとタイムアウトまで無駄に待つ</li>
+</ul>
+
+<h3>既知の改善候補</h3>
+<div class="tablewrap">
+<table>
+<thead><tr><th>項目</th><th>内容</th><th>効果</th></tr></thead>
+<tbody>
+<tr><td>HUP/TERM トラップ</td><td>キル時に「ステップN で中断」をログと状態ファイルへ残す</td><td>CloudShell 中断時の到達位置判定が確実になる（保護属性の復元は間に合わない可能性あり）</td></tr>
+<tr><td>03 への <code>--target</code></td><td>05 と同じ形で 1 台指定を可能にする</td><td><code>targets.txt</code> の編集なしで 1 台ずつ実行できる。CloudShell 運用では実質必須</td></tr>
+<tr><td><code>WORK_DIR</code> の永続性チェック</td><td><code>$HOME</code> 配下でなければ警告する</td><td>単一障害点の予防。ただし <code>lib/common.sh</code> に入れると 01〜04 に影響する</td></tr>
+<tr><td>インスタンスストア検出の強化</td><td>現在は <code>describe-instances</code> の BDM を見ているが、この API は instance store を返さない。<code>describe-instance-types</code> の <code>InstanceStorageSupported</code> を見るのが正確</td><td>検出漏れの解消</td></tr>
+</tbody>
+</table>
+</div>
+
+<footer>
+  <p>switch-ec2 開発者ドキュメント — 実際の作業手順は <a href="operator.html">操作手順書</a> を参照してください。<br>
+  仕様の一次情報は <code>SPEC.md</code>、コマンドリファレンスと手動復旧 runbook は <code>README.md</code> にあります。</p>
+</footer>
+</main>
+</div>
+</body>
+</html>

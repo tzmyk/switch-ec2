@@ -8,7 +8,6 @@ set -euo pipefail
 # verify_expected_volumes.json, verify_actual_volumes.json, verify_old_tags.normalized.json, verify_new_tags.normalized.json,
 # after_instance.json, after_volumes.json, after_enis.json（01_prepare.sh の before_*.json と手動 diff する describe 全文）,
 # 04_verify.log, timings_04_verify.tsv。
-# ディスクUUIDとOSバージョンの実測検証は、踏み台EC2上で ec2-side/compare_disk_info.sh を実行して確認する。
 
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 # shellcheck source=lib/common.sh
@@ -247,8 +246,7 @@ process_target() {
     report_info "UserData は引き継いでいない（COPY_USER_DATA=false）"
   fi
 
-  # --- ステップ8: OS 内実測検証と手動 diff の案内 ---
-  report_info "ディスクUUIDとOSバージョンの実測検証は踏み台EC2上で ec2-side/compare_disk_info.sh を実行して確認すること"
+  # --- ステップ8: 手動 diff の案内 ---
   report_info "切替前後の describe 全文の手動 diff:"
   report_info "  diff -u $dir/before_instance.json $dir/after_instance.json"
   report_info "  diff -u $dir/before_volumes.json $dir/after_volumes.json"

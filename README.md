@@ -13,28 +13,32 @@ EC2 の課金コード/UsageOperation は、インスタンス起動時に指定
 - `SPEC.md`: 仕様書（方式・処理・状態ファイル・安全ガードの定義）
 - `config.env.example`: 設定ファイル例
 - `targets.txt.example`: 対象インスタンスIDの例
-- `ec2-side/`: 踏み台EC2側のOS内実測スクリプト
 - `lib/common.sh`: 共通関数
 - `01_prepare.sh`: 事前情報取得と検証
 - `02_backup.sh`: バックアップ AMI 作成
 - `03_switch.sh`: EC2 切替
 - `04_verify.sh`: 切替後確認
+- `05_rollback.sh`: バックアップ AMI からの切り戻し
+- `06_verify_rollback.sh`: 切り戻し後確認
+- `docs/operator.html`: 操作者向けドキュメント（手順・注意点・トラブル時の対応）
+- `docs/developer.html`: 開発者向けドキュメント（内部構造・設計判断・状態ファイル仕様）
 
 ## 実行環境
 
-運用環境は CloudShell と踏み台EC2に分けて実行します。
+スクリプトはすべて CloudShell（または同等の bash 環境）で実行します。**本スクリプト群は AWS API 操作のみを行い、対象EC2のOS内には一切ログインしません。**
 
-| 環境 | 役割 | 主なスクリプト | 必要な接続/権限 |
+| 環境 | 役割 | スクリプト | 必要な接続/権限 |
 | --- | --- | --- | --- |
-| CloudShell | AWS API による情報取得、AMI作成、EC2/ENI/EBS切替、AWS側検証 | `01_prepare.sh`、`02_backup.sh`、`03_switch.sh`、`04_verify.sh` | AWS CLI 実行権限 |
-| 踏み台EC2 | 対象EC2のOS内情報をSSHで実測し、切替前後をローカル比較 | `ec2-side/collect_disk_info.sh`、`ec2-side/compare_disk_info.sh` | 対象EC2へのSSH到達性 |
+| CloudShell | AWS API による情報取得、AMI作成、EC2/ENI/EBS切替、AWS側検証、切り戻し | `01_prepare.sh`〜`06_verify_rollback.sh` | AWS CLI 実行権限 |
+
+OS内の事前作業・事後作業（後述）は別途 SSH で実施します。踏み台EC2などの接続経路は本手順の対象外です。
 
 ## 前提条件
 
 - AWS CloudShell または同等の bash 環境
 - AWS CLI v2 と `jq`
 - 対象リソースを操作できる admin 相当の権限
-- 踏み台EC2から対象EC2へSSH接続できること
+- OS内の事前作業を実施するため、対象EC2へSSHできる経路があること
 - `NEW_AMI_ID` の AMI が対象インスタンスと同じリージョンに存在し、`available`
 - 新 AMI と旧インスタンスのアーキテクチャが一致
 - 新 AMI と旧インスタンスの BootMode が一致（`legacy-bios` / `uefi`）
@@ -68,27 +72,28 @@ vi targets.txt
 必ず次の順番で実行してください。
 
 ```bash
-# CloudShell: AWS側の事前情報取得とバックアップAMI作成
+# AWS側の事前情報取得とバックアップAMI作成
 ./01_prepare.sh
 ./02_backup.sh
 
-# 踏み台EC2: 切替前のOS内情報を収集
-cd ec2-side
-./collect_disk_info.sh before
-cd ..
-
-# CloudShell: EC2切替とAWS側検証
+# EC2切替とAWS側検証
 ./03_switch.sh
 ./04_verify.sh
-
-# 踏み台EC2: 切替後のOS内情報を収集し、before/afterを比較
-cd ec2-side
-./collect_disk_info.sh after
-./compare_disk_info.sh
 ```
 
-`ec2-side/collect_disk_info.sh before` は必ず `03_switch.sh` より前に実行してください。切替後に before を取り直すと、旧OSディスク・旧UUIDの証跡になりません。
-既存の `before_*.txt` が1つでもある場合は誤上書きを防ぐため失敗します。意図的に取り直す場合だけ `./collect_disk_info.sh before --force` を使用してください。収集は一時ファイルへ行い、SSH成功と必須出力の非空を確認してから確定します。
+切替後に切り戻す場合は CloudShell で次を実行します。`05_rollback.sh` は逐次実行のみです。
+
+```bash
+./05_rollback.sh
+./06_verify_rollback.sh
+
+# 緊急時に1台だけ対象とする場合（複数回指定可）
+./05_rollback.sh --target i-0123456789abcdef0
+```
+
+`05_rollback.sh` の確認画面には terminate する ELC 新 EC2、バックアップ AMI、巻き戻り時点、
+失われる書き込み期間、残置 EBS が表示されます。内容を確認して `yes` と入力してください。
+自動実行時のみ `--yes` を指定します。
 
 破壊的操作を含む `03_switch.sh` は確認プロンプトを出します。自動実行する場合は `--yes` を付けます。
 
@@ -125,7 +130,7 @@ cd ec2-side
 
 ログは画面（stderr）と同時に `${WORK_DIR}/<instance-id>/<スクリプト名>.log` へ追記されます。
 
-`03_switch.sh` はステップごとの所要時間を計測し、対象の切替完了時に内訳を表示します。同じ内容は `${WORK_DIR}/<instance-id>/timings_03_switch.tsv`（`ステップ名<TAB>秒` の TSV）に保存されるので、メンテナンスウィンドウの見積りや逐次/並行の比較に使えます。
+`03_switch.sh`、`05_rollback.sh`、`06_verify_rollback.sh` はステップごとの所要時間を計測し、対象の処理完了時に内訳を表示します。同じ内容は `${WORK_DIR}/<instance-id>/timings_<スクリプト名>.tsv`（`ステップ名<TAB>秒` の TSV）に保存されるので、メンテナンスウィンドウの見積りに使えます。
 
 ```
 [INFO] [i-0abc] 切替所要時間 内訳: i-0abc -> i-0xyz
@@ -144,6 +149,97 @@ cd ec2-side
   TOTAL                              629s
 ```
 
+## CloudShell で実行する際の制約
+
+本スクリプト群は CloudShell での実行を想定していますが、CloudShell には**セッションが自動終了する**
+制約があります。破壊的操作を含む `03_switch.sh` と `05_rollback.sh` は 1 台あたり 5〜11 分かかるため、
+実行中に中断される可能性を前提に運用してください。
+
+### 何が起きるか
+
+- CloudShell は**キーボード・ポインタ操作がない状態が約 20〜30 分続くとセッションを終了**します。
+  **スクリプトが動いていることは「操作」とみなされません。**放置すると実行中でも切られます。
+- セッションが終了するとコンテナごと破棄され、実行中のプロセスは停止します。
+  `nohup` や `tmux` を使ってもコンテナ停止には耐えられません。
+- 永続化されるのは **`$HOME` 配下（リージョンごとに 1GB）だけ**です。
+
+### 必ず守ること
+
+1. **リポジトリと `WORK_DIR` を `$HOME` 配下に置く。** 実行前に `pwd` が `/home/cloudshell-user` 配下
+   であることを確認してください。`/tmp` などで作業すると、セッション終了時に状態ファイルが消え、
+   **後述の手動復旧 runbook がほぼ使えなくなります**（どのボリュームがどのデバイスに対応するかを
+   人間が推測することになります）。ここが CloudShell 運用の単一障害点です。
+2. **実行中はターミナルを操作し続ける。** 待っているだけでは操作とみなされません。
+   **これが中断を防ぐ唯一の実効的な手段です。**複数台をまとめて処理する場合、
+   実行時間は台数に応じて長くなるため、放置しないでください。
+
+### 複数台・並行実行について
+
+対象台数と切替可能な時間枠の都合上、**1 回の実行で複数台を対象にすること、および `--parallel` の
+使用は許容されます。**そのうえで、次の点を理解して運用してください。
+
+- **中断リスクは実行時間に比例します。** 逐次で 3 台なら約 20〜35 分となり、
+  タイムアウト窓を超えます。前述のとおりターミナルを操作し続けてください。
+- **`--parallel` は総所要時間を「最も遅い 1 台分＋順番待ち」に近づけます。**
+  台数が多い場合は、逐次より並行のほうが中断リスクの窓を短くできます。
+- **並行実行中に中断されると、手動復旧が必要な対象が同時に複数発生します。**
+  `MAX_PARALLEL` は小さい値（既定 4）から始め、復旧体制と相談して決めてください。
+- **状態ファイルとログは対象ごとに独立しています。**
+  中断後は `${WORK_DIR}/<instance-id>/03_switch.log` を対象ごとに読めば、
+  どの対象がどこまで進んだかを個別に判定できます。復旧も対象ごとに独立して行えます。
+- **並行モードの確認プロンプトは開始前に 1 回だけです。** fan-out 前に全対象の read-only 事前確認を
+  通すため、**1 台でも検証に失敗すれば破壊的操作は 1 台も実行されません。**
+
+### 中断後の切り分け（複数台の場合）
+
+```bash
+# 各対象がどこまで進んだかを一覧する
+for d in work/*/; do
+  printf '%s: %s\n' "$(basename "$d")" "$(tail -1 "$d/03_switch.log" 2>/dev/null)"
+done
+```
+
+### 中断されてもデータは失われない
+
+`03_switch.sh` と `05_rollback.sh` は、**terminate より前に全 EBS と全 ENI の
+`DeleteOnTermination=false` を設定し、全 EBS をデタッチしてから** terminate を発行します。
+そのため、どのタイミングで中断されても EBS と ENI はデータごと残ります。
+また、リソースを識別できなくする操作（デタッチ・terminate）の**前に**状態ファイルを書くため、
+中断後も対象を特定できます。
+
+ただし**自動では復旧しません。**中断後は必ず手動復旧 runbook に従ってください。
+
+### 中断後にまず行うこと
+
+```bash
+# 1. どのステップまで完了したかを確認する（ログは即時追記されるので必ず残っています）
+tail -20 work/<old-instance-id>/03_switch.log
+
+# 2. terminate が発行済みかを確認する（stopped なら未発行、shutting-down/terminated なら発行済み）
+aws ec2 describe-instances --instance-ids <old-instance-id> \
+  --query 'Reservations[].Instances[].State.Name' --output text
+```
+
+そのうえで「手動復旧 runbook」の該当する節に進んでください。**そのまま再実行しないでください。**
+（再実行しても構成ドリフト検査やインスタンス状態チェックが破壊的操作の前に停止させますが、
+到達位置を確認してから対処するのが正しい手順です。）
+
+### 中断時に個別に注意が必要な箇所
+
+- **保護属性が戻りません。** 終了保護・停止保護を一時解除した直後に中断されると、
+  復元処理（ERR トラップ）は動きません。セッション終了はシェルのエラーではないためです。
+  再接続後に `disable_api_termination.json` / `disable_api_stop.json` の値と実際の属性を比較し、
+  必要なら手動で戻してください。
+- **`03_switch.sh` のステップ11（最長・実測 178〜260 秒）で中断されると、`05_rollback.sh` が
+  起動を拒否します。** ステップ11の最後に書かれる `new_instance_after_switch.json` が
+  05 の完走証跡として必須のためです。`04_verify.sh` で切替の完了を確認したうえで、
+  次のコマンドで証跡を作成してから 05 を実行してください。
+
+```bash
+aws ec2 describe-instances --instance-ids "$(cat work/<old-instance-id>/new_instance_id.txt)" \
+  > work/<old-instance-id>/new_instance_after_switch.json
+```
+
 ## 各ステップ
 
 ### 01_prepare.sh
@@ -160,8 +256,6 @@ cd ec2-side
 - インスタンスストアがないこと（`ALLOW_INSTANCE_STORE_LOSS=true` の明示的な opt-in を除く）
 
 さらに、切替前後の手動 diff 用に `describe` の全文を `before_instance.json` / `before_volumes.json` / `before_enis.json` として保存します（後述の「切替前後 describe の手動 diff」を参照）。
-
-ディスクUUIDとOSバージョンのベースライン取得は CloudShell 側では行いません。踏み台EC2上で `ec2-side/collect_disk_info.sh before` を実行して保存します。
 
 ### 02_backup.sh
 
@@ -216,8 +310,26 @@ cd ec2-side
 
 あわせて、切替後の `describe` 全文を `after_instance.json` / `after_volumes.json` / `after_enis.json` として保存します（後述の「切替前後 describe の手動 diff」を参照）。
 
-ディスクUUIDとOSバージョンの実測検証は、踏み台EC2上で `ec2-side/collect_disk_info.sh after` と `ec2-side/compare_disk_info.sh` を実行して確認します。
-UUID対応表が before/after のどちらかで空の場合、Xen世代など NVMe SERIAL から EBS ボリュームIDを特定できない構成として FAIL にします。
+
+### 05_rollback.sh
+
+`02_backup.sh` が旧 PAYG EC2 から作成したバックアップ AMI の Block Device Mapping をそのまま使い、
+スナップショット由来の新規 EBS を持つ復旧 EC2 を起動します。ELC 新 EC2 の全 EBS は
+`DeleteOnTermination=false` を実測確認してからデタッチし、`available` のまま残置します。
+保全 ENI は DeviceIndex を維持して復旧 EC2 に再利用するため、IP、EIP、MAC、SG を維持します。
+
+破壊操作前に、バックアップ AMI の SourceInstanceId・Architecture・BootMode・UsageOperation、
+AMI の全 BDM と SnapshotId、スナップショットの `completed`、ELC 新 EC2 の EBS/ENI 現物構成を確認します。
+追加 EBS は既定で中止し、確認済みの場合だけ環境変数 `ROLLBACK_ALLOW_EXTRA_VOLUMES=true` で保全して続行します。
+この追加 EBS は DOT=false 化とデタッチを行いますが、ロールバック用タグは付けません。
+
+### 06_verify_rollback.sh
+
+復旧 EC2 の IP、ENI、起動属性、保護設定、タグ、インスタンスタイプを旧ベースラインと照合し、
+`UsageOperation` が `usage_operation.json` の旧 PAYG 値へ戻ったことを確認します。方式上 VolumeId は
+必ず変わるため、EBS はデバイス名、DeleteOnTermination、バックアップ AMI の SnapshotId、
+サイズ、タイプ、IOPS、Throughput、暗号化属性で照合します。保全 EBS の残置、ELC 新 EC2 の
+terminated、復旧 EC2 の 2/2 ステータス、全 ENI のアタッチも独立に再確認します。
 
 ## 切替前後 describe の手動 diff
 
@@ -279,6 +391,47 @@ eni（`before_enis.json` → `after_enis.json`）:
 
 参考として、検証環境（同一構成・同一 AZ）で実測した際の差分は `InstanceId` / `LaunchTime` / `ImageId` / `ClientToken` / `ReservationId` / `AttachTime` / `AttachmentId` / `UsageOperationUpdateTime` のみでした。
 
+### 切り戻し前後 describe の想定 diff
+
+`06_verify_rollback.sh` は `after_rollback_instance.json` / `after_rollback_volumes.json` /
+`after_rollback_enis.json` を保存します。方式Bでは AMI スナップショットから全 EBS を作り直すため、
+次の差分は設計どおりです。
+
+- instance: `InstanceId`、`LaunchTime`、`ImageId`（バックアップ AMI ID）、`ClientToken`
+  （`switch-ec2-rollback-<旧ID>`）、`ReservationId`、`AmiLaunchIndex`、`StateTransitionReason`、
+  `BlockDeviceMappings[].Ebs.VolumeId`、`AttachTime`、ENI の `AttachmentId`、
+  `UsageOperationUpdateTime`、PrivateDnsName 関連、`aws:` 予約タグ
+- volumes: `VolumeId`、`CreateTime`、`SnapshotId`、`Attachments[].InstanceId`、`AttachTime`、
+  `Tags`（後述）、`Device`（後述の並び順による見かけ上の差分）
+- eni: `Attachment.AttachmentId`、`AttachTime`、`InstanceId`、`InstanceOwnerId`、取得時点による `Status`
+
+これ以外の差分は想定外として原因を確認してください。
+
+volumes の `Device` 差分は**並び順による見かけ上のもの**です。`after_rollback_volumes.json` は
+ボリュームID順にソートされますが、方式Bでは全ボリュームのIDが変わるため、データボリュームが
+複数ある場合に配列内の順序が入れ替わります。デバイス名の**集合**が一致していれば正常です。
+`06_verify_rollback.sh` はデバイス名で対応付けて比較するため、この並び替えの影響を受けません。
+
+```bash
+# 集合として一致していることの確認
+jq -c '[.Volumes[].Attachments[0].Device] | sort' work/<old-instance-id>/before_volumes.json
+jq -c '[.Volumes[].Attachments[0].Device] | sort' work/<old-instance-id>/after_rollback_volumes.json
+```
+
+volumes の `Tags` 差分は実体のある差分です。**EBS ボリュームのタグは AMI・スナップショット経由で
+引き継がれません。**`create-image` はボリュームのタグをスナップショットへコピーせず、
+`run-instances` も AMI から作るボリュームにタグを付けないため、復旧 EC2 のボリュームは
+**タグが空の状態で作成されます**（インスタンス本体のタグは 01 が保存した値から復元されるため影響ありません）。
+`06_verify_rollback.sh` はボリュームタグを検証対象にしていません。ボリュームのタグを条件にした
+AWS Backup のリソース割り当て、DLM のライフサイクルポリシー、コスト配分タグを使っている場合は、
+**切り戻し後に手動でタグを付け直してください。**切替前のタグは `before_volumes.json` に残っています。
+
+```bash
+# 切替前のボリュームタグを確認する
+jq -r '.Volumes[] | [.Attachments[0].Device, (.Tags // [] | map(.Key + "=" + .Value) | join(","))] | @tsv' \
+  work/<old-instance-id>/before_volumes.json
+```
+
 ## OS内想定作業（スクリプト対象外・本番手順に組み込むこと）
 
 本スクリプトは AWS API 操作のみを行います。以下は対象EC2のOS内で実施する作業です。
@@ -300,27 +453,15 @@ preserve_hostname: true
 EOF
 ```
 
-踏み台EC2から全対象へSSHできる環境であれば、事前に一括投入できます。
+全対象へSSHできる環境であれば、事前に一括投入できます。
 
 ### 切替後（検証PASS後すみやかに実施）
 
 PAYG時代のRHUIリポジトリはELCインスタンスでは認可されず（`dnf` が 403 エラー）、
-パッケージ更新・セキュリティパッチ適用ができない状態になるため、サブスクリプションを登録し直します。
+パッケージ更新・セキュリティパッチ適用ができない状態になるため、サブスクリプションの登録し直しが必要です。
 
-```bash
-# 1. RHUIクライアントを撤去（旧PAYG時代のリポジトリ設定ごと削除）
-sudo dnf remove 'rh-amazon-rhui-client*'
-
-# 2. ELC契約のサブスクリプションへ登録
-#    登録方式（カスタマーポータル直接 / Satellite / アクティベーションキー）は
-#    ELC契約の提供形態に依存するため、ライセンス提供元に事前確認すること
-sudo subscription-manager register --activationkey=<キー> --org=<組織ID>
-
-# 3. リポジトリが使えることを確認
-sudo subscription-manager status
-sudo dnf repolist
-sudo dnf makecache
-```
+**本案件では Satellite を使用します。具体的な登録手順は専用の手順書に従ってください。**
+本 README では扱いません。
 
 なお、OS内でも以下は**作業不要**です（同一ディスク・同一ENIを移すため）:
 `/etc/machine-id`・fstab/デバイス名（UUIDマウント維持）・ネットワーク設定（MACアドレスも不変）・時刻同期（Amazon Time Sync）・authorized_keys（cloud-init は追記のみで置換しない）。
@@ -342,32 +483,52 @@ sudo dnf makecache
 
 - 旧 EC2 は terminate されます。プライマリ ENI は running/stopped インスタンスから単独デタッチできないため、同一 IP を引き継ぐには旧 EC2 の terminate が必要です。
 - Elastic IP は ENI に紐付くため、ENI ごと移すことで自動的に維持されます。
-- cloud-init のインスタンスID変化対策（SSHホスト鍵・ホスト名）と、切替後の `subscription-manager` 再登録は「OS内想定作業」の節を参照してください。
+- cloud-init のインスタンスID変化対策（SSHホスト鍵・ホスト名）と、切替後のサブスクリプション再登録は「OS内想定作業」の節を参照してください。
 - 新 AMI 由来の RHEL 9.8 ルートボリュームは削除しません。`Purpose=switch-ec2-discarded-root` と `DeleteAfterVerification=true` のタグを付けるので、検証完了後に手動削除してください。
 - `aws:` で始まるタグは AWS 予約タグのため新 EC2 にコピーできません。引き継ぎ対象外とし、`04_verify.sh` のタグ比較でも除外します。
 - UserData は既定で引き継ぎません。再実行リスクを確認のうえ、必要な場合だけ `COPY_USER_DATA=true` を設定してください。
-- 対象 EC2 と踏み台EC2のOS側に `jq` は不要です。踏み台側の収集・比較は `bash`、`ssh`、`awk`、`diff`、`sort` を使います。
 - インスタンスストアボリュームは引き継げません。既定では検出時に中止し、`ALLOW_INSTANCE_STORE_LOSS=true` の場合だけ警告して続行します。
 - BootMode 不一致は起動不能リスクが高いためエラーにします。`uefi-preferred` AMI と `uefi` の組み合わせは許容しますが、`legacy-bios` との組み合わせは既定で中止します。旧OSディスクのハイブリッドブート対応を確認済みの場合だけ `ALLOW_UEFI_PREFERRED_ON_BIOS=true` を使用してください。
+- cloud-init の OS 内事前作業（`ssh_deletekeys: false` / `preserve_hostname: true`）は、必ず
+  `02_backup.sh` より前にディスクへ永続化してください。後から行うとバックアップ AMI に含まれず、
+  復旧 EC2 で SSH ホスト鍵が再生成されます。
+- 切り戻すと、OS 内のサブスクリプション登録状態もバックアップ AMI 取得時点（PAYG）へ戻ります。
+  切替後に Satellite 側へ登録した情報との整合は、専用の手順書に従って確認してください。
+- `cloud.cfg.d` への設定ファイル配置など、02 より前にディスクへ永続化した恒久対策は復旧後も有効です。
+  一方、cloud-init キャッシュの一時的な手動クリアなど AMI に結果が入らない対処は、復旧後に同じ症状が再発し得ます。
+- 復旧 EC2 の EBS と残置する保全 EBS はファイルシステム UUID が同一です。データ救出時に保全 EBS を
+  復旧 EC2 へ同時アタッチせず、必ず別インスタンスへアタッチしてください。
+- インスタンス ID は旧 PAYG → ELC → 復旧の3世代で変化します。CloudWatch アラーム、SSM、
+  ターゲットグループなど instance-id をキーにした外部リソースを再設定してください。
+- **EBS ボリュームのタグは復旧 EC2 へ引き継がれません。**AMI スナップショットから作られる
+  ボリュームはタグが空になります。ボリュームのタグを条件にした AWS Backup・DLM・コスト配分タグを
+  使っている場合は、`before_volumes.json` を参照して切り戻し後に手動で付け直してください
+  （詳細は「切り戻し前後 describe の想定 diff」を参照）。
+- 切り戻し後もスクリプトはリソースを自動削除しません。検証とデータ救出判断の完了後に、
+  (1) `rollback_preserved_volume_ids.txt` の保全 EBS、(2) `discarded_root_volume_id.txt` の03由来ルート、
+  (3) `backup_ami_id.txt` の AMI とスナップショット、(4) opt-in で保全したタグなし追加 EBS、
+  の順に対象を特定して手動削除してください。
 
 ## 切り戻し概要
 
-切替後に問題がある場合は、`02_backup.sh` で作成したバックアップ AMI と、保全済み ENI/EBS を使って復旧します。
+切替後に問題がある場合は `05_rollback.sh` を実行し、その後 `06_verify_rollback.sh` で検証します。
+採用方式は**バックアップ AMI のスナップショットからの完全復元（方式B）**です。復旧 EC2 のデータは
+`02_backup.sh` の AMI 取得時点まで巻き戻り、それ以降の書き込みは失われます。
 
 概要:
 
-1. 新 EC2 を停止
-2. 全 EBS/ENI の `DeleteOnTermination=false` を確認・設定
-3. 新 EC2 から全 EBS をデタッチ
-4. プライマリ ENI は stopped インスタンスからデタッチできないため、新 EC2 を terminate
-5. 全 ENI が `available` になるまで待機
-6. バックアップ AMI と保全済みの旧 ENI（DeviceIndexを維持）を指定して復旧用 EC2 を起動
-7. 復旧用 EC2 を停止
-8. 復旧用 AMI 由来のルートボリュームを外す
-9. 保全済みの旧 EBS を元の構成で付け替え、EBS/ENI の `DeleteOnTermination` を復元
-10. 復旧用 EC2 を起動してサービス確認
+1. 状態ファイル、バックアップ AMI/スナップショット、ELC 新 EC2 の現物構成を read-only で事前確認
+2. ELC 新 EC2 の保護を解除して停止
+3. 現物の全 EBS/ENI を `DeleteOnTermination=false` にし、API 実測で確認
+4. ELC 新 EC2 の全 EBS をデタッチして `available` で残置
+5. ELC 新 EC2 を terminate し、全 ENI の `available` を待機
+6. バックアップ AMI の BDM を変更せず、保全 ENI を DeviceIndex 維持で指定して復旧 EC2 を起動
+7. 復旧 EC2 の 2/2 ステータスチェックを待機
+8. EBS/ENI の `DeleteOnTermination` と停止保護を切替前の値へ復元
+9. 残置 EBS に識別・UUID重複警告タグを付与し、最終状態を保存
+10. `06_verify_rollback.sh` で PAYG への復帰と AWS 側構成を検証し、OS 内項目を手動確認
 
-実際の切り戻しでは、状態ファイル内の `backup_ami_id.txt`、`enis.json`、`block_devices.json`、`new_instance_id.txt`、`discarded_root_volume_id.txt` を参照してください。
+保全済み旧 EBS を復旧 EC2 に付け替える旧手順は使用しません。保全 EBS は ELC 稼働中のデータ救出用として残します。
 
 ## 手動復旧 runbook
 
@@ -439,16 +600,37 @@ aws ec2 describe-instances \
 
 `new_instance_id.txt` で操作対象を、`discarded_root_volume_id.txt` で新 AMI 由来の退避ルートを確認します。`block_devices.json` の全 VolumeId が新 EC2 に期待デバイス名で `attached` かを `describe-volumes` で確認し、不足分だけ `attach-volume` します。その後 DeleteOnTermination、停止/終了保護を状態ファイルどおりに復元し、新 EC2 を起動して `04_verify.sh` と OS 内比較を実行します。退避ルートは検証完了まで削除しません。
 
+### 05_rollback.sh が途中失敗した場合
+
+`05_rollback.sh` は `rollback_instance_id.txt` がある対象への再実行を禁止します。ファイルが無い場合も、
+破壊操作開始後はそのまま再実行せず `05_rollback.log` と AWS 現物から到達位置を確認してください。
+
+- terminate 前: ELC 新 EC2 は stopped で残ります。ERR トラップの保護復元ログを確認し、
+  EBS をデタッチ済みなら `rollback_preserved_volume_ids.txt` と切替後のデバイス名を参照して再アタッチし、
+  ELC 新 EC2 を起動します。
+- terminate 後から run-instances 前: ELC 新 EC2 は戻せません。`enis.json` の全 ENI が `available`、
+  バックアップ AMI が `available` であることを確認し、05 のステップ6と同じ引数で手動起動します。
+- run-instances 応答喪失: 同じトークンで再発行せず、次のコマンドで起動済み復旧 EC2 を特定します。
+
+```bash
+aws ec2 describe-instances \
+  --filters "Name=client-token,Values=switch-ec2-rollback-${OLD}" \
+  --query 'Reservations[].Instances[].{InstanceId:InstanceId,State:State.Name}'
+```
+
+特定した ID を `rollback_instance_id.txt` に保存し、DeleteOnTermination、停止保護、保全 EBS タグ、
+`rollback_instance_after.json` を05の後続ステップどおり手動で確定してから `06_verify_rollback.sh` を実行します。
+
 ## 構文チェック
 
 ```bash
-bash -n lib/common.sh 01_prepare.sh 02_backup.sh 03_switch.sh 04_verify.sh ec2-side/collect_disk_info.sh ec2-side/compare_disk_info.sh
+bash -n lib/common.sh 01_prepare.sh 02_backup.sh 03_switch.sh 04_verify.sh 05_rollback.sh 06_verify_rollback.sh
 ```
 
 `shellcheck` がある環境では、追加で以下を実行してください。
 
 ```bash
-shellcheck lib/common.sh 01_prepare.sh 02_backup.sh 03_switch.sh 04_verify.sh ec2-side/collect_disk_info.sh ec2-side/compare_disk_info.sh
+shellcheck lib/common.sh 01_prepare.sh 02_backup.sh 03_switch.sh 04_verify.sh 05_rollback.sh 06_verify_rollback.sh
 ```
 
 ## 検証環境

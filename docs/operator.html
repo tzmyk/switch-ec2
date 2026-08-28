@@ -1,0 +1,654 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>switch-ec2 操作手順書</title>
+<style>
+  :root {
+    --bg: #fbfaf8;
+    --surface: #ffffff;
+    --surface-2: #f4f2ef;
+    --text: #1f2328;
+    --muted: #656d76;
+    --border: #dcd8d2;
+    --border-strong: #b9b2a8;
+    --accent: #c2410c;
+    --accent-soft: #fdf1e8;
+    --teal: #0f6674;
+    --teal-soft: #e6f2f3;
+    --danger: #b42318;
+    --danger-soft: #fdecea;
+    --warn: #92620a;
+    --warn-soft: #fdf5e3;
+    --ok: #1a7f47;
+    --ok-soft: #e9f6ee;
+    --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+    --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", "Hiragino Kaku Gothic ProN", "Noto Sans JP", Meiryo, sans-serif;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #15171b; --surface: #1c1f24; --surface-2: #22262c;
+      --text: #e5e8ec; --muted: #9aa3ad; --border: #2e343c; --border-strong: #444c56;
+      --accent: #f97e3c; --accent-soft: #2c1d14;
+      --teal: #4fb3c4; --teal-soft: #12262a;
+      --danger: #f8776a; --danger-soft: #2d1614;
+      --warn: #e0aa3e; --warn-soft: #2a2113;
+      --ok: #4bbd7c; --ok-soft: #14261b;
+    }
+  }
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font-family: var(--sans); line-height: 1.85; font-size: 15.5px;
+    -webkit-text-size-adjust: 100%;
+  }
+  .wrap { display: flex; align-items: flex-start; max-width: 1240px; margin: 0 auto; }
+  nav {
+    position: sticky; top: 0; flex: 0 0 250px; height: 100vh; overflow-y: auto;
+    padding: 28px 18px 40px; border-right: 1px solid var(--border); font-size: 13.5px;
+  }
+  nav .navtitle { font-weight: 700; font-size: 14px; letter-spacing: .04em; color: var(--accent); margin-bottom: 4px; }
+  nav .navsub { color: var(--muted); font-size: 12px; margin-bottom: 18px; }
+  nav a { display: block; color: var(--muted); text-decoration: none; padding: 5px 10px; border-radius: 6px; border-left: 2px solid transparent; }
+  nav a:hover { background: var(--surface-2); color: var(--text); border-left-color: var(--accent); }
+  nav .navgroup { margin-top: 16px; font-size: 11px; text-transform: uppercase; letter-spacing: .08em; color: var(--border-strong); padding: 0 10px 4px; }
+  nav .switchdoc { margin-top: 26px; padding: 12px 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); }
+  nav .switchdoc a { padding: 0; color: var(--teal); font-weight: 600; border: 0; }
+  nav .switchdoc a:hover { background: none; text-decoration: underline; }
+  nav .switchdoc p { margin: 4px 0 0; font-size: 11.5px; color: var(--muted); line-height: 1.6; }
+  main { flex: 1 1 auto; min-width: 0; padding: 36px 40px 120px; }
+  header.page { border-bottom: 2px solid var(--accent); padding-bottom: 20px; margin-bottom: 34px; }
+  header.page .eyebrow { color: var(--accent); font-weight: 700; font-size: 12.5px; letter-spacing: .1em; text-transform: uppercase; }
+  header.page h1 { font-size: 32px; margin: 8px 0 10px; line-height: 1.3; letter-spacing: -.01em; }
+  header.page p.lede { margin: 0; color: var(--muted); font-size: 16px; max-width: 62ch; }
+  h2 { font-size: 22px; margin: 52px 0 14px; padding-bottom: 8px; border-bottom: 1px solid var(--border); letter-spacing: -.01em; scroll-margin-top: 20px; }
+  h3 { font-size: 17px; margin: 30px 0 10px; color: var(--accent); scroll-margin-top: 20px; }
+  h4 { font-size: 15px; margin: 22px 0 8px; }
+  p { margin: 12px 0; max-width: 74ch; }
+  ul, ol { max-width: 74ch; padding-left: 22px; }
+  li { margin: 7px 0; }
+  code { font-family: var(--mono); font-size: .875em; background: var(--surface-2); padding: 2px 6px; border-radius: 4px; border: 1px solid var(--border); }
+  pre { background: var(--surface-2); border: 1px solid var(--border); border-radius: 8px; padding: 14px 16px; overflow-x: auto; font-size: 13px; line-height: 1.7; }
+  pre code { background: none; border: 0; padding: 0; font-size: 13px; }
+  .tablewrap { overflow-x: auto; margin: 16px 0; }
+  table { border-collapse: collapse; width: 100%; font-size: 14px; background: var(--surface); }
+  th, td { border: 1px solid var(--border); padding: 9px 12px; text-align: left; vertical-align: top; }
+  th { background: var(--surface-2); font-weight: 700; white-space: nowrap; }
+  .callout { border-radius: 8px; padding: 14px 18px; margin: 20px 0; border: 1px solid; border-left-width: 4px; }
+  .callout p:first-child { margin-top: 0; } .callout p:last-child { margin-bottom: 0; }
+  .callout .label { font-weight: 700; font-size: 13px; letter-spacing: .04em; display: block; margin-bottom: 4px; }
+  .danger { background: var(--danger-soft); border-color: var(--danger); }
+  .danger .label { color: var(--danger); }
+  .warn { background: var(--warn-soft); border-color: var(--warn); }
+  .warn .label { color: var(--warn); }
+  .ok { background: var(--ok-soft); border-color: var(--ok); }
+  .ok .label { color: var(--ok); }
+  .info { background: var(--teal-soft); border-color: var(--teal); }
+  .info .label { color: var(--teal); }
+  .step { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 4px 22px 18px; margin: 18px 0; }
+  .step > h3 { display: flex; align-items: center; gap: 11px; color: var(--text); }
+  .step .num { flex: 0 0 auto; display: inline-flex; align-items: center; justify-content: center; width: 30px; height: 30px; border-radius: 50%; background: var(--accent); color: #fff; font-size: 15px; font-weight: 700; font-family: var(--mono); }
+  .meta { display: inline-block; font-size: 12px; color: var(--muted); background: var(--surface-2); border: 1px solid var(--border); border-radius: 20px; padding: 2px 11px; margin-left: 6px; font-weight: 400; }
+  .check { list-style: none; padding-left: 4px; }
+  .check li { padding-left: 28px; position: relative; }
+  .check li::before { content: "☐"; position: absolute; left: 4px; color: var(--accent); font-size: 16px; }
+  figure { margin: 24px 0; }
+  figure svg { display: block; width: 100%; height: auto; max-width: 760px; margin: 0 auto; }
+  figcaption { text-align: center; color: var(--muted); font-size: 13px; margin-top: 8px; }
+  .kv { font-family: var(--mono); font-size: 13px; }
+  .yes { color: var(--ok); font-weight: 700; }
+  .no { color: var(--danger); font-weight: 700; }
+  footer { margin-top: 70px; padding-top: 20px; border-top: 1px solid var(--border); color: var(--muted); font-size: 13px; }
+  @media (max-width: 900px) {
+    .wrap { flex-direction: column; }
+    nav { position: static; height: auto; width: 100%; flex-basis: auto; border-right: 0; border-bottom: 1px solid var(--border); }
+    main { padding: 24px 18px 80px; }
+    header.page h1 { font-size: 25px; }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+<nav>
+  <div class="navtitle">switch-ec2</div>
+  <div class="navsub">操作手順書</div>
+  <div class="navgroup">はじめに</div>
+  <a href="#what">この作業は何をするのか</a>
+  <a href="#effect">何が変わり、何が変わらないか</a>
+  <a href="#flow">作業の全体像と所要時間</a>
+  <div class="navgroup">実行前に必ず読む</div>
+  <a href="#cloudshell">CloudShell の制約</a>
+  <a href="#prereq">事前に確認・依頼すること</a>
+  <a href="#setup">準備</a>
+  <div class="navgroup">実行</div>
+  <a href="#run">切替の手順</a>
+  <a href="#rollback">切り戻しの手順</a>
+  <div class="navgroup">困ったとき</div>
+  <a href="#trouble">症状別の対処</a>
+  <a href="#interrupted">途中で中断されたら</a>
+  <div class="navgroup">作業後</div>
+  <a href="#after">残っている作業</a>
+  <a href="#glossary">用語集</a>
+  <div class="switchdoc">
+    <a href="developer.html">開発者向けドキュメント →</a>
+    <p>スクリプトの内部構造・設計判断・状態ファイル仕様はこちら。</p>
+  </div>
+</nav>
+
+<main>
+<header class="page">
+  <div class="eyebrow">操作者向け</div>
+  <h1>switch-ec2 操作手順書</h1>
+  <p class="lede">稼働中の EC2 を作り直さずに、RHEL のライセンスだけを PAYG から ELC へ切り替えるための手順書です。サーバーの中身・IP アドレスはそのまま引き継ぎます。</p>
+</header>
+
+<h2 id="what">この作業は何をするのか</h2>
+
+<p>EC2 の <strong>ライセンス種別（課金コード）は、インスタンスを起動したときに使った AMI で決まり、後から変更できません</strong>。すでに動いているサーバーのライセンスだけを変えることはできない、ということです。</p>
+
+<p>そこでこのツールは、次の手順でライセンスだけを入れ替えます。</p>
+
+<ol>
+  <li>ELC ライセンスの AMI から、<strong>空っぽの新しい EC2</strong> を起動する（この瞬間にライセンスが確定します）</li>
+  <li>新しい EC2 に最初から付いてきたディスクを取り外して捨てる</li>
+  <li>元のサーバーの<strong>ディスク（OS ごと全部）とネットワークカードを、そのまま新しい EC2 に付け替える</strong></li>
+</ol>
+
+<p>結果として、<strong>中身は元のサーバーのまま、ライセンスだけが変わった EC2</strong> ができあがります。OS の再インストールもデータ移行も行いません。</p>
+
+<figure>
+<svg viewBox="0 0 760 250" role="img" aria-label="旧EC2のディスクとネットワークカードを新EC2へ付け替える図">
+  <defs>
+    <marker id="ar" markerWidth="9" markerHeight="9" refX="7" refY="3.2" orient="auto">
+      <path d="M0,0 L0,6.4 L8,3.2 z" fill="var(--accent)"/>
+    </marker>
+  </defs>
+  <rect x="18" y="42" width="215" height="170" rx="10" fill="var(--surface)" stroke="var(--border-strong)" stroke-width="1.5"/>
+  <text x="125" y="30" text-anchor="middle" font-size="14" font-weight="700" fill="var(--text)">元の EC2（PAYG）</text>
+  <text x="125" y="66" text-anchor="middle" font-size="12" fill="var(--danger)">最後は削除される</text>
+  <rect x="42" y="82" width="167" height="42" rx="6" fill="var(--teal-soft)" stroke="var(--teal)"/>
+  <text x="125" y="100" text-anchor="middle" font-size="12.5" fill="var(--text)">OS ディスク</text>
+  <text x="125" y="116" text-anchor="middle" font-size="11" fill="var(--muted)">データもそのまま</text>
+  <rect x="42" y="136" width="167" height="42" rx="6" fill="var(--teal-soft)" stroke="var(--teal)"/>
+  <text x="125" y="154" text-anchor="middle" font-size="12.5" fill="var(--text)">ネットワークカード</text>
+  <text x="125" y="170" text-anchor="middle" font-size="11" fill="var(--muted)">IP アドレスを保持</text>
+
+  <path d="M245 103 L305 103" stroke="var(--accent)" stroke-width="2.5" fill="none" marker-end="url(#ar)"/>
+  <path d="M245 157 L305 157" stroke="var(--accent)" stroke-width="2.5" fill="none" marker-end="url(#ar)"/>
+  <text x="275" y="94" text-anchor="middle" font-size="11.5" fill="var(--accent)" font-weight="700">付け替え</text>
+
+  <rect x="318" y="42" width="215" height="170" rx="10" fill="var(--surface)" stroke="var(--accent)" stroke-width="2"/>
+  <text x="425" y="30" text-anchor="middle" font-size="14" font-weight="700" fill="var(--text)">新しい EC2（ELC）</text>
+  <text x="425" y="66" text-anchor="middle" font-size="12" fill="var(--ok)">これが本番になる</text>
+  <rect x="342" y="82" width="167" height="42" rx="6" fill="var(--teal-soft)" stroke="var(--teal)"/>
+  <text x="425" y="107" text-anchor="middle" font-size="12.5" fill="var(--text)">同じ OS ディスク</text>
+  <rect x="342" y="136" width="167" height="42" rx="6" fill="var(--teal-soft)" stroke="var(--teal)"/>
+  <text x="425" y="161" text-anchor="middle" font-size="12.5" fill="var(--text)">同じネットワークカード</text>
+
+  <rect x="570" y="72" width="172" height="110" rx="10" fill="var(--surface-2)" stroke="var(--border)" stroke-dasharray="4 3"/>
+  <text x="656" y="98" text-anchor="middle" font-size="12.5" font-weight="700" fill="var(--muted)">新 AMI 付属のディスク</text>
+  <text x="656" y="124" text-anchor="middle" font-size="11.5" fill="var(--muted)">起動直後に取り外して</text>
+  <text x="656" y="142" text-anchor="middle" font-size="11.5" fill="var(--muted)">「削除予定」タグを付与</text>
+  <text x="656" y="164" text-anchor="middle" font-size="11.5" fill="var(--warn)">※ 自動削除はしません</text>
+</svg>
+<figcaption>ライセンスは起動時の AMI で決まる。だから「新しい器」を作って中身を移す。</figcaption>
+</figure>
+
+<h2 id="effect">何が変わり、何が変わらないか</h2>
+
+<div class="tablewrap">
+<table>
+<thead><tr><th>項目</th><th>結果</th><th>補足</th></tr></thead>
+<tbody>
+<tr><td>OS・アプリ・データ</td><td class="yes">変わらない</td><td>ディスクそのものを移すため。再インストール・コピーは一切しません</td></tr>
+<tr><td>プライベート IP アドレス</td><td class="yes">変わらない</td><td>ネットワークカードごと移すため</td></tr>
+<tr><td>Elastic IP</td><td class="yes">変わらない</td><td>ネットワークカードに紐づいているため自動的に付いてきます</td></tr>
+<tr><td>MAC アドレス</td><td class="yes">変わらない</td><td>同上</td></tr>
+<tr><td>セキュリティグループ</td><td class="yes">変わらない</td><td>同上</td></tr>
+<tr><td>インスタンスタイプ・タグ・IAM ロール</td><td class="yes">変わらない</td><td>元の設定を読み取って新しい EC2 に再設定します</td></tr>
+<tr><td>ライセンス（課金コード）</td><td class="no">変わる</td><td><strong>これが作業の目的です</strong></td></tr>
+<tr><td>インスタンス ID</td><td class="no">変わる</td><td><strong>要注意。</strong>下の警告を参照してください</td></tr>
+<tr><td>自動割り当てのパブリック IP</td><td class="no">変わる</td><td>Elastic IP を使っていない場合、パブリック IP は別の値になります</td></tr>
+<tr><td>EBS ボリュームに付けたタグ</td><td class="no">消える場合がある</td><td>切り戻しを行った場合のみ。ボリュームのタグは引き継がれません</td></tr>
+</tbody>
+</table>
+</div>
+
+<div class="callout danger">
+  <span class="label">インスタンス ID が変わることの影響</span>
+  <p>インスタンス ID（<code class="kv">i-0abc...</code>）は<strong>必ず新しい値になります</strong>。次のものは <strong>ID を見て動いているため、作業後に設定し直す必要があります</strong>。スクリプトはこれらを自動で直しません。</p>
+  <ul>
+    <li>CloudWatch のアラーム</li>
+    <li>ロードバランサーのターゲットグループへの登録</li>
+    <li>Auto Scaling グループへの登録</li>
+    <li>AWS Backup・DLM の対象指定（タグで指定している場合は影響しません）</li>
+    <li>SSM の管理対象、監視 SaaS の登録、社内の管理台帳・CMDB</li>
+  </ul>
+  <p><strong>作業前に「このサーバーの ID を参照している設定」を洗い出しておいてください。</strong></p>
+</div>
+
+<h2 id="flow">作業の全体像と所要時間</h2>
+
+<p>作業は <strong>CloudShell（AWS のブラウザ上のターミナル）</strong>だけで行います。番号付きのスクリプトを、番号順に実行するだけです。<strong>スクリプトは対象サーバーの中にはログインしません。</strong></p>
+
+<div class="tablewrap">
+<table>
+<thead><tr><th>順番</th><th>やること</th><th>所要時間の目安</th><th>サービス停止</th></tr></thead>
+<tbody>
+<tr><td>1</td><td><code>01_prepare.sh</code> — 今の設定を全部記録して、切替できるか検査</td><td>約 40 秒/台</td><td>なし</td></tr>
+<tr><td>2</td><td><code>02_backup.sh</code> — バックアップ AMI を作成</td><td>3〜10 分</td><td><strong>再起動あり</strong></td></tr>
+<tr><td>3</td><td><code>03_switch.sh</code> — <strong>切替の本体</strong></td><td><strong>約 7〜11 分/台</strong></td><td><strong>停止あり</strong></td></tr>
+<tr><td>4</td><td><code>04_verify.sh</code> — 切替結果を検査</td><td>約 30 秒/台</td><td>なし</td></tr>
+</tbody>
+</table>
+</div>
+
+<div class="callout warn">
+  <span class="label">サービスが止まるタイミングは 2 回</span>
+  <p><strong>1 回目：</strong>手順 2 のバックアップ AMI 作成時に再起動が入ります（整合性を確保するためです）。<br>
+  <strong>2 回目：</strong>手順 3 の切替本体で、停止 → 起動が入ります。<strong>約 7〜11 分です。</strong></p>
+  <p>複数台を対象にする場合、手順 2 では<strong>全台がほぼ同時に再起動します</strong>。クラスタを組んでいて同時再起動が許されない構成では、<code>targets.txt</code> を分けて別々に実行してください。</p>
+</div>
+
+<h2 id="cloudshell">CloudShell の制約 <span class="meta">実行前に必ず読む</span></h2>
+
+<div class="callout danger">
+  <span class="label">CloudShell は放置すると勝手に終了します</span>
+  <p>CloudShell は、<strong>キーボードやマウスの操作がない状態が約 20〜30 分続くとセッションを終了</strong>します。<strong>スクリプトが動いていることは「操作」とみなされません。</strong>画面を眺めているだけ、別のタブを見ている、といった状態では切られます。</p>
+  <p>セッションが終了すると、<strong>実行中のスクリプトは強制的に止まります。</strong></p>
+</div>
+
+<h3>必ず守ってほしい 2 つのこと</h3>
+
+<div class="step">
+<h3><span class="num">1</span>ホームディレクトリで作業する</h3>
+<p>CloudShell で保存されるのは <strong>ホームディレクトリ（<code>/home/cloudshell-user</code>）の中だけ</strong>です。それ以外の場所に置いたファイルは、セッションが終わると消えます。</p>
+<p>このツールは作業の記録を <code>work/</code> フォルダに保存し、<strong>トラブル時の復旧はこの記録が頼り</strong>です。記録が消えると復旧が非常に困難になります。</p>
+<pre><code># 実行前に必ず確認する。/home/cloudshell-user で始まっていれば OK
+pwd</code></pre>
+</div>
+
+<div class="step">
+<h3><span class="num">2</span>実行中はターミナルを操作し続ける</h3>
+<p>待っている間、ときどきキーを押す（何も入力しない <kbd>Enter</kbd> でも構いません）などして、操作がある状態を保ってください。</p>
+<p><strong>これが中断を防ぐ唯一の実効的な手段です。</strong>複数台をまとめて処理する場合は実行時間が長くなるので、絶対に放置しないでください。</p>
+</div>
+
+<h3>複数台をまとめて処理する場合</h3>
+
+<p>対象台数と作業できる時間枠の都合上、<strong>1 回の実行で複数台を対象にすること、および <code>--parallel</code>（同時処理）の使用は問題ありません。</strong>そのうえで、次のことを知っておいてください。</p>
+
+<div class="tablewrap">
+<table>
+<thead><tr><th>やり方</th><th>所要時間</th><th>中断されたときの影響</th></tr></thead>
+<tbody>
+<tr><td>1 台ずつ（既定）</td><td>台数 × 7〜11 分</td><td>中途半端になるのは常に 1 台だけ</td></tr>
+<tr><td><code>--parallel</code> で同時処理</td><td>「最も遅い 1 台分 ＋ 順番待ち」に近づく</td><td><strong>手作業での復旧が必要なサーバーが同時に複数発生しうる</strong></td></tr>
+</tbody>
+</table>
+</div>
+
+<pre><code># config.env の MAX_PARALLEL 台まで同時処理（既定 4 台）
+./03_switch.sh --parallel
+
+# 同時処理する台数を明示する
+./03_switch.sh --parallel=2</code></pre>
+
+<ul>
+  <li><strong>台数が多い場合は、同時処理のほうが中断リスクの窓が短くなります。</strong>全体の実行時間が短くなるためです</li>
+  <li><strong>同時処理する台数は小さい値から始めてください。</strong>中断されたときに同時に対応しなければならないサーバーの数が、そのまま増えます</li>
+  <li><strong>同時処理でも記録とログはサーバーごとに分かれています。</strong>画面には全サーバーのログが混ざって流れますが、<code>work/&lt;サーバーのID&gt;/03_switch.log</code> を見れば 1 台分だけを追えます。復旧もサーバーごとに独立して行えます</li>
+  <li><strong>同時処理のときは、確認メッセージが最初に 1 回だけ出ます。</strong>先に全サーバーの事前検査を通すので、<strong>1 台でも検査に失敗すれば、どのサーバーも変更されません</strong></li>
+</ul>
+
+<div class="callout ok">
+  <span class="label">もし中断されても、データは失われません</span>
+  <p>スクリプトは、<strong>元のサーバーを削除する前に、ディスクとネットワークカードを「削除されない設定」に変更し、ディスクを取り外し終えてから</strong>削除を実行します。どのタイミングで中断されても、ディスクとネットワークカードはデータごと AWS 上に残ります。</p>
+  <p>ただし<strong>自動では元に戻りません。</strong>中断されたら「<a href="#interrupted">途中で中断されたら</a>」を見てください。</p>
+</div>
+
+<h2 id="prereq">事前に確認・依頼すること</h2>
+
+<p>作業を始める前に、次の項目を関係者に確認してください。<strong>ここが埋まっていないと当日スクリプトが止まります。</strong></p>
+
+<h3>ライセンス提供元に確認すること</h3>
+<ul class="check">
+  <li><strong>ELC ライセンスの AMI ID</strong>（<code class="kv">ami-...</code>）。対象サーバーと同じリージョンにあること</li>
+  <li><strong>切替後に期待される課金コード</strong>（例：<code class="kv">RunInstances:00g0</code>）。任意ですが、設定しておくと検査が厳密になります</li>
+  <li><strong>切替後のサブスクリプション登録方法。</strong>カスタマーポータル直接／Satellite／アクティベーションキーのどれか。<strong>これが分からないと、切替後にセキュリティパッチが当てられない状態になります</strong></li>
+</ul>
+
+<h3>サーバー管理者に確認すること</h3>
+<ul class="check">
+  <li>対象サーバーが <strong>起動中（running）</strong>であること。停止中のサーバーは対象にできません</li>
+  <li>対象サーバーに<strong>インストールされているエージェント類の一覧</strong>（監視・バックアップ・ウイルス対策など）。インスタンス ID が変わることで再登録が必要なものがあります</li>
+  <li>次の構成を<strong>使っていない</strong>こと。使っている場合は切替できません（スクリプトが検出して停止します）
+    <ul>
+      <li>スポットインスタンス／プレイスメントグループ／専有ホスト</li>
+      <li>ハイバネーション／Nitro Enclaves／マルチネットワークカード</li>
+      <li>複数インスタンスに同時接続するディスク（Multi-Attach）</li>
+      <li>インスタンスストア（消えてしまうため。了承のうえ続行することは可能です）</li>
+    </ul>
+  </li>
+</ul>
+
+<h3>自分で用意すること</h3>
+<ul class="check">
+  <li>対象リソースを操作できる管理者権限（IAM ロールを使っているサーバーの場合、<code>iam:PassRole</code> も必要です）</li>
+  <li>OS 内の事前作業を行うため、対象サーバーへ SSH できる状態（鍵・セキュリティグループ）</li>
+  <li><strong>停止可能な時間帯の調整。</strong>再起動 1 回＋停止 7〜11 分が必要です</li>
+  <li>インスタンス ID を参照している設定の洗い出し（前述の警告を参照）</li>
+</ul>
+
+<div class="callout warn">
+  <span class="label">切替前に必ず行う OS 内の設定（忘れると SSH できなくなります）</span>
+  <p>インスタンス ID が変わると、OS の初期設定機能（cloud-init）が「新しいサーバーだ」と判断して、<strong>SSH のホスト鍵を作り直し、ホスト名を初期値に戻してしまいます。</strong>そうなると、接続元すべてで「ホスト鍵が違う」という警告が出て SSH が拒否されます。</p>
+  <p>これを防ぐため、<strong>対象サーバーの OS 内で、以下のファイルを作成しておいてください。</strong></p>
+  <pre><code>sudo tee /etc/cloud/cloud.cfg.d/99-switch-ec2.cfg &lt;&lt;'EOF'
+ssh_deletekeys: false
+preserve_hostname: true
+EOF</code></pre>
+  <p><strong>この作業は手順 2（バックアップ AMI 作成）より前に行ってください。</strong>後から行うとバックアップ AMI にこの設定が入らず、切り戻しをしたときに同じ問題が起きます。</p>
+</div>
+
+<h2 id="setup">準備</h2>
+
+<p>CloudShell を開き、リポジトリをホームディレクトリに置いた状態から始めます。</p>
+
+<pre><code># 1. 設定ファイルをひな形からコピーする
+cp config.env.example config.env
+cp targets.txt.example targets.txt
+
+# 2. config.env を編集する
+vi config.env</code></pre>
+
+<p><code>config.env</code> で必ず設定する項目は次の 2 つだけです。ほかはそのままで構いません。</p>
+
+<div class="tablewrap">
+<table>
+<thead><tr><th>項目</th><th>設定する内容</th></tr></thead>
+<tbody>
+<tr><td><code class="kv">NEW_AMI_ID</code></td><td>ライセンス提供元から入手した ELC の AMI ID</td></tr>
+<tr><td><code class="kv">AWS_REGION</code></td><td>対象サーバーのリージョン（例：<code class="kv">ap-northeast-1</code>）</td></tr>
+</tbody>
+</table>
+</div>
+
+<pre><code># 3. targets.txt に対象サーバーのインスタンス ID を書く（1 行 1 台）
+#    複数台まとめて指定できます。台数分の実行時間がかかる点に注意してください
+vi targets.txt</code></pre>
+
+<h2 id="run">切替の手順</h2>
+
+<div class="callout info">
+  <span class="label">共通のルール</span>
+  <p>各スクリプトは<strong>必ずこの順番で</strong>実行してください。前のスクリプトが保存した記録を、次のスクリプトが使います。<br>
+  失敗した場合は<strong>そのまま次に進まないでください。</strong></p>
+</div>
+
+<div class="step">
+<h3><span class="num">1</span>設定の記録と事前検査 <span class="meta">CloudShell · 約 40 秒/台 · 停止なし</span></h3>
+<pre><code>./01_prepare.sh</code></pre>
+<p>今のサーバーの設定を隅々まで記録し、切替できる構成かどうかを検査します。<strong>この時点では何も変更しません。</strong>安心して実行できます。</p>
+<p><strong>成功の見分け方：</strong>最後に <code>成功: 1 台 / 失敗: 0 台</code> と表示されること。</p>
+<p><strong>失敗したら：</strong>エラーメッセージに理由が書かれています。「非対応です」と出た場合は、その構成では切替できません。関係者に相談してください。</p>
+</div>
+
+<div class="step">
+<h3><span class="num">2</span>バックアップ AMI の作成 <span class="meta">CloudShell · 3〜10 分 · 再起動あり</span></h3>
+<pre><code>./02_backup.sh</code></pre>
+<p>元のサーバーの完全なバックアップを AMI として作ります。<strong>切り戻しをするときはこの AMI を使います。</strong></p>
+<div class="callout warn">
+  <p><strong>ここで対象サーバーが再起動します。</strong>停止可能な時間帯であることを確認してから実行してください。</p>
+</div>
+<p><strong>成功の見分け方：</strong><code>AMI が available になりました</code> と表示され、<code>失敗: 0 台</code> で終わること。</p>
+</div>
+
+<div class="step">
+<h3><span class="num">3</span>切替の実行 <span class="meta">CloudShell · 7〜11 分/台 · 停止あり</span></h3>
+<pre><code>./03_switch.sh</code></pre>
+<p><strong>ここが本番です。</strong>元のサーバーは削除され、新しい EC2 に置き換わります。</p>
+<p>実行すると確認メッセージが出るので、内容を読んで <code>yes</code> と入力してください。</p>
+<div class="callout danger">
+  <span class="label">この操作は取り消せません</span>
+  <p>元の EC2 は削除されます。同じ IP アドレスを引き継ぐには、元の EC2 を削除するしか方法がないためです。ディスクとネットワークカードは残るので、問題があれば切り戻せます。</p>
+  <p><strong>実行中はターミナルを操作し続けてください。</strong>放置すると CloudShell に切られます。</p>
+</div>
+<p><strong>成功の見分け方：</strong><code>切替完了: old=... new=...</code> と表示され、所要時間の内訳が出ること。</p>
+</div>
+
+<div class="step">
+<h3><span class="num">4</span>切替結果の検査 <span class="meta">CloudShell · 約 30 秒/台 · 停止なし</span></h3>
+<pre><code>./04_verify.sh</code></pre>
+<p>IP アドレス・ディスク・タグ・各種設定が引き継がれているか、ライセンスが変わったかを 1 項目ずつ検査します。<strong>読み取るだけで何も変更しません。</strong></p>
+<p><strong>成功の見分け方：</strong>すべての行が <code>[PASS]</code> で、最後が <code>PASS</code> で終わること。</p>
+<p><strong>1 つでも <code>[FAIL]</code> があったら：</strong>内容を確認してください。特に <code>UsageOperation</code> の FAIL は<strong>ライセンスが切り替わっていない</strong>ことを意味し、作業の目的が達成できていません。</p>
+</div>
+
+<div class="callout ok">
+  <span class="label">ここまで完了したら</span>
+  <p>切替は成功です。ただし<strong>まだ作業が残っています。</strong>「<a href="#after">作業後に残っている作業</a>」に必ず進んでください。特に <strong>OS 内のサブスクリプション再登録</strong>は、放置するとセキュリティパッチが当てられない状態が続きます。</p>
+</div>
+
+<h2 id="rollback">切り戻しの手順</h2>
+
+<p>切替後に問題が見つかった場合、<strong>バックアップ AMI から元のライセンス（PAYG）のサーバーを復旧できます。</strong></p>
+
+<div class="callout danger">
+  <span class="label">切り戻すとデータが巻き戻ります</span>
+  <p>復旧に使うのは<strong>手順 2 で作ったバックアップ AMI</strong>です。つまり、<strong>そのバックアップを取った時点までデータが戻ります。</strong>切替作業中および切替後に書き込まれたデータは失われます。</p>
+  <p>実行時に「巻き戻り時点」と「失われる書き込み期間」が表示されるので、必ず確認してください。</p>
+  <p>切替後に書き込まれたデータが入ったディスクは<strong>削除せずに残します</strong>ので、後からデータを取り出すことは可能です（下の注意を参照）。</p>
+</div>
+
+<pre><code># targets.txt の全対象を切り戻す
+./05_rollback.sh
+
+# 対象を絞って切り戻す（複数回指定できます）
+./05_rollback.sh --target i-0123456789abcdef0
+
+# 実行後に検査する
+./06_verify_rollback.sh</code></pre>
+
+<p><code>05_rollback.sh</code> は<strong>1 台ずつ順番に処理します</strong>（同時処理のオプションはありません）。複数台を切り戻す場合、所要時間は台数分かかります。</p>
+
+<p><code>05_rollback.sh</code> は、確認メッセージで次を表示します。<strong>内容を読んでから <code>yes</code> と入力してください。</strong></p>
+<ul>
+  <li>削除される切替後の EC2 の ID</li>
+  <li>復旧に使うバックアップ AMI の ID</li>
+  <li>巻き戻る時点と、そこから現在までの経過時間（＝失われる書き込みの期間）</li>
+  <li>残しておくディスクの ID</li>
+</ul>
+
+<p><strong>所要時間は約 5〜6 分/台</strong>です。切替本体より少し短くなります。</p>
+
+<p><strong>成功の見分け方：</strong><code>切り戻し完了:</code> と表示され、<code>06_verify_rollback.sh</code> がすべて <code>[PASS]</code> で終わること。</p>
+
+<div class="callout warn">
+  <span class="label">残したディスクを触るときの注意</span>
+  <p>切り戻しで残したディスクには <code class="kv">Warning: DO-NOT-ATTACH-DUPLICATE-FS-UUID</code> というタグが付いています。</p>
+  <p>これは、<strong>復旧したサーバーのディスクと、残したディスクの識別子が完全に同じ</strong>ためです。データを取り出したいからといって<strong>復旧したサーバーに直接つなぐと、識別子が重複して正しくマウントできず、危険です。</strong>必ず<strong>別のサーバー</strong>につないでください。</p>
+</div>
+
+<div class="callout info">
+  <span class="label">切り戻し後の状態について</span>
+  <p>切り戻すと、OS の中身もバックアップを取った時点に戻ります。つまり<strong>切替後に行ったサブスクリプション再登録などの作業も元に戻ります</strong>（PAYG 用の設定に戻るので、パッチ適用は正常にできます）。</p>
+  <p>また、<strong>ディスクに付けていたタグは引き継がれません。</strong>ディスクのタグを条件にバックアップ設定などをしている場合は、付け直してください。切替前のタグは <code>work/&lt;元のID&gt;/before_volumes.json</code> に残っています。</p>
+</div>
+
+<h2 id="trouble">症状別の対処</h2>
+
+<div class="tablewrap">
+<table>
+<thead><tr><th>症状</th><th>意味</th><th>対処</th></tr></thead>
+<tbody>
+<tr>
+  <td><code>インスタンスが running ではありません</code></td>
+  <td>対象サーバーが停止中・起動中など</td>
+  <td>サーバーを起動してから <code>01</code> をやり直してください</td>
+</tr>
+<tr>
+  <td><code>〜は非対応です</code></td>
+  <td>切替できない構成を使っている</td>
+  <td>その構成では切替できません。関係者に相談してください</td>
+</tr>
+<tr>
+  <td><code>BootMode 不一致</code></td>
+  <td>新しい AMI と元のサーバーの起動方式が違う</td>
+  <td><strong>そのまま進めると起動しなくなる恐れがあります。</strong>ライセンス提供元に AMI を確認してください</td>
+</tr>
+<tr>
+  <td><code>インスタンスストアがあります</code></td>
+  <td>引き継げないディスクがある</td>
+  <td>そのディスクのデータは失われます。了承できる場合のみ、<code>config.env</code> で <code class="kv">ALLOW_INSTANCE_STORE_LOSS=true</code> を設定します</td>
+</tr>
+<tr>
+  <td><code>prepare 後に EBS 構成が変更されている</code></td>
+  <td><code>01</code> の実行後に、誰かがディスク構成を変えた</td>
+  <td>何が変わったか確認し、<code>01</code> からやり直してください</td>
+</tr>
+<tr>
+  <td><code>UsageOperation が切替前後で変化していません</code></td>
+  <td><strong>ライセンスが切り替わっていない</strong></td>
+  <td>指定した AMI がライセンス切替用のものか、提供元に確認してください。作業の目的が未達です</td>
+</tr>
+<tr>
+  <td><code>この対象は切り戻し済みのため再実行禁止です</code></td>
+  <td>すでに切り戻し済みのサーバーに再度実行した</td>
+  <td>正常な保護動作です。AWS 側は何も変更されていません</td>
+</tr>
+<tr>
+  <td><code>03_switch.sh の完走証跡がありません</code></td>
+  <td>切替が最後まで終わっていない状態で切り戻そうとした</td>
+  <td>「<a href="#interrupted">途中で中断されたら</a>」を参照してください</td>
+</tr>
+</tbody>
+</table>
+</div>
+
+<h2 id="interrupted">途中で中断されたら</h2>
+
+<div class="callout ok">
+  <span class="label">まず落ち着いてください</span>
+  <p><strong>ディスクとネットワークカードは必ず残っています。</strong>データが失われることはありません。<strong>やってはいけないのは、慌てて同じスクリプトを再実行することと、AWS コンソールから手動でサーバーを削除することです。</strong></p>
+</div>
+
+<h3>手順 1：どこまで進んだかを確認する</h3>
+<p>ログはリアルタイムで保存されているので、必ず残っています。</p>
+<pre><code># 1 台を詳しく見る
+tail -20 work/&lt;元のインスタンスID&gt;/03_switch.log
+
+# 複数台をまとめて処理していた場合は、対象ごとの最終行を一覧できます
+for d in work/*/; do
+  printf '%s: %s\n' "$(basename "$d")" "$(tail -1 "$d/03_switch.log" 2&gt;/dev/null)"
+done</code></pre>
+<p>最後に <code>ステップN ... 完了</code> と出ている行が、完了したところです。</p>
+
+<h3>手順 2：元のサーバーが残っているかを確認する</h3>
+<pre><code>aws ec2 describe-instances --instance-ids &lt;元のインスタンスID&gt; \
+  --query 'Reservations[].Instances[].State.Name' --output text</code></pre>
+
+<div class="tablewrap">
+<table>
+<thead><tr><th>表示された状態</th><th>意味</th><th>次にすること</th></tr></thead>
+<tbody>
+<tr><td><code>running</code> / <code>stopped</code></td><td>元のサーバーはまだ残っています</td><td>元に戻すことも、作業を続けることもできます。開発担当者に連絡してください</td></tr>
+<tr><td><code>shutting-down</code> / <code>terminated</code></td><td>元のサーバーは削除済みです</td><td>ディスクとネットワークカードは残っています。開発担当者に連絡して、手動で作業を続けてもらってください</td></tr>
+</tbody>
+</table>
+</div>
+
+<h3>手順 3：開発担当者に伝える情報</h3>
+<ul>
+  <li>ログの最後の行（どのステップまで完了したか）</li>
+  <li>手順 2 で確認した元のサーバーの状態</li>
+  <li><code>work/&lt;元のインスタンスID&gt;/</code> フォルダが残っていること</li>
+</ul>
+
+<div class="callout danger">
+  <span class="label">絶対にやらないこと</span>
+  <ul>
+    <li><strong>同じスクリプトをそのまま再実行する</strong>（安全装置が働いて止まるようになっていますが、まず状況確認が先です）</li>
+    <li><strong>AWS コンソールから手動でインスタンスやディスクを削除する</strong>（復旧できなくなります）</li>
+    <li><strong><code>work/</code> フォルダを削除する</strong>（復旧の唯一の手がかりです）</li>
+  </ul>
+</div>
+
+<div class="callout warn">
+  <span class="label">切替がほぼ終わっていたのに中断された場合</span>
+  <p><code>04_verify.sh</code> がすべて PASS するのに <code>05_rollback.sh</code> が「完走証跡がありません」と言って止まる場合があります。これは切替の最後の記録だけが残らなかった状態です。次のコマンドで記録を作り直せます。</p>
+  <pre><code>aws ec2 describe-instances \
+  --instance-ids "$(cat work/&lt;元のID&gt;/new_instance_id.txt)" \
+  &gt; work/&lt;元のID&gt;/new_instance_after_switch.json</code></pre>
+  <p><strong>実行する前に必ず <code>04_verify.sh</code> で切替が完了していることを確認してください。</strong></p>
+</div>
+
+<h2 id="after">作業後に残っている作業</h2>
+
+<h3>1. OS の中で行う作業（重要）</h3>
+
+<div class="callout danger">
+  <span class="label">サブスクリプションの再登録 — 検査が通ったらすぐに実施</span>
+  <p>切替前のライセンスで使っていたパッケージ配信サーバー（RHUI）は、<strong>ELC のサーバーからは使えません。</strong>そのままにすると <code>dnf</code> がエラーになり、<strong>セキュリティパッチが一切当てられない状態になります。</strong></p>
+  <p><strong>本案件では Satellite を使用します。登録の具体的な手順は専用の手順書に従ってください。</strong>この文書では扱いません。</p>
+</div>
+
+<div class="callout info">
+  <span class="label">やらなくてよいこと</span>
+  <p>同じディスク・同じネットワークカードを移しているため、次の作業は<strong>不要</strong>です。<br>
+  <code>/etc/machine-id</code>／<code>fstab</code> やデバイス名の書き換え／ネットワーク設定／時刻同期の設定／<code>authorized_keys</code></p>
+</div>
+
+<h3>2. インスタンス ID を参照している設定の修正</h3>
+<p>作業前に洗い出しておいた項目（CloudWatch アラーム、ターゲットグループ、監視ツールの登録など）を、新しいインスタンス ID に更新してください。</p>
+
+<h3>3. 不要になったリソースの削除</h3>
+
+<p><strong>スクリプトは何も自動削除しません。</strong>すべて課金され続けるので、検証が完了して問題ないと判断できたら、手動で削除してください。</p>
+
+<div class="tablewrap">
+<table>
+<thead><tr><th>対象</th><th>目印</th><th>いつ消してよいか</th></tr></thead>
+<tbody>
+<tr><td>新 AMI に付いてきた不要なディスク</td><td>タグ <code class="kv">Purpose = switch-ec2-discarded-root</code></td><td>検査がすべて PASS し、しばらく運用して問題ないと確認できたら</td></tr>
+<tr><td>バックアップ AMI とスナップショット</td><td>タグ <code class="kv">Purpose = switch-ec2-backup</code></td><td>切り戻す可能性がなくなったら。<strong>保持期間を決めておくことを推奨します</strong></td></tr>
+<tr><td>切り戻しで残したディスク<br>（切り戻した場合のみ）</td><td>タグ <code class="kv">Purpose = switch-ec2-rollback-preserved</code></td><td>必要なデータを取り出し終えたら</td></tr>
+</tbody>
+</table>
+</div>
+
+<div class="callout warn">
+  <p>これらは<strong>消し忘れやすい</strong>ので、作業完了時のチェックリストに入れてください。実際に、過去の検証で作られたディスクが消されないまま残っていた例があります。</p>
+</div>
+
+<h2 id="glossary">用語集</h2>
+
+<div class="tablewrap">
+<table>
+<thead><tr><th>用語</th><th>意味</th></tr></thead>
+<tbody>
+<tr><td>AMI</td><td>EC2 を起動するときの「型」。OS の内容とライセンス種別を持っています</td></tr>
+<tr><td>EBS（ボリューム）</td><td>EC2 に接続するディスク。OS もデータもここに入っています</td></tr>
+<tr><td>ENI（ネットワークインターフェース）</td><td>EC2 のネットワークカード。IP アドレス・MAC アドレス・セキュリティグループを持っています</td></tr>
+<tr><td>スナップショット</td><td>EBS のバックアップ。AMI の実体はスナップショットの集まりです</td></tr>
+<tr><td>UsageOperation</td><td>課金コード。どのライセンスで課金されるかを表します。<strong>起動時の AMI で決まり、後から変更できません</strong></td></tr>
+<tr><td>PAYG</td><td>従量課金のライセンス。時間単位でライセンス料が課金されます</td></tr>
+<tr><td>ELC</td><td>Extended Life Cycle。延長サポート契約のライセンス</td></tr>
+<tr><td>DeleteOnTermination</td><td>「EC2 を削除したらこのディスク／ネットワークカードも一緒に削除する」という設定。<strong>このツールは削除前に必ずこれを OFF にします</strong></td></tr>
+<tr><td>terminate</td><td>EC2 の削除。停止（stop）と違い、元に戻せません</td></tr>
+<tr><td>CloudShell</td><td>AWS のブラウザ上で使えるターミナル。このツールの実行環境です</td></tr>
+<tr><td>cloud-init</td><td>EC2 の初回起動時に初期設定を行う仕組み。<strong>インスタンス ID が変わると「新しいサーバー」と判断して再実行されます</strong></td></tr>
+</tbody>
+</table>
+</div>
+
+<footer>
+  <p>switch-ec2 操作手順書 — 内部構造・設計の詳細は <a href="developer.html">開発者向けドキュメント</a> を参照してください。<br>
+  コマンドの網羅的なリファレンスと手動復旧の詳細手順は、リポジトリの <code>README.md</code> にあります。</p>
+</footer>
+</main>
+</div>
+</body>
+</html>

@@ -11,7 +11,6 @@ set -euo pipefail
 # capacity_reservation.json, user_data.b64.txt, new_ami_boot_mode.txt, instance_boot_mode.txt,
 # before_instance.json, before_volumes.json, before_enis.json（切替前後の手動 diff 用 describe 全文）,
 # 01_prepare.log, timings_01_prepare.tsv。
-# ディスクUUIDとOSバージョンの実測検証は、踏み台EC2側の ec2-side/ で実施する。
 
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 # shellcheck source=lib/common.sh
