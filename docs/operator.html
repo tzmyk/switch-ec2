@@ -124,6 +124,7 @@
   <a href="#setup">準備</a>
   <div class="navgroup">実行</div>
   <a href="#run">切替の手順</a>
+  <a href="#tagging">リソースへのタグ付け</a>
   <a href="#rollback">切り戻しの手順</a>
   <div class="navgroup">困ったとき</div>
   <a href="#trouble">症状別の対処</a>
@@ -427,6 +428,17 @@ vi targets.txt</code></pre>
 <p><strong>1 つでも <code>[FAIL]</code> があったら：</strong>内容を確認してください。特に <code>UsageOperation</code> の FAIL は<strong>ライセンスが切り替わっていない</strong>ことを意味し、作業の目的が達成できていません。</p>
 </div>
 
+<div class="step">
+<h3 id="tagging"><span class="num">5</span>リソースへのタグ付け <span class="meta">CloudShell · 約 10 秒/台 · 停止なし · 任意</span></h3>
+<pre><code>./90_tag_resources.sh --dry-run
+./90_tag_resources.sh</code></pre>
+<p>この作業で新しく作られたもの（バックアップ AMI、そのスナップショット、切替後のサーバー、不要になったディスク）に、管理用のタグを付けます。あとから棚卸ししたり、消し忘れを見つけたりするためのものです。<strong>タグを付けるだけで、サーバーには何の影響もありません。</strong></p>
+<p>まず <code>--dry-run</code> で何にタグが付くかを確認してから、本番を実行してください。確認プロンプトに <code>yes</code> と入力します。</p>
+<p><strong>切替前から存在していたディスクやネットワークインターフェースには、一切タグを付けません。</strong>対象は今回の作業で新しく作られたものだけです。</p>
+<p><strong>成功の見分け方：</strong>最後に <code>成功: N 台 / 失敗: 0 台</code> と表示されること。</p>
+<p><strong>注意：</strong>必ず手順 4 のあとに実行してください。順番を逆にすると手順 4 の検査が失敗します。また、この手順のあとに手順 4 をもう一度実行すると「タグ不一致」で FAIL しますが、これは仕様どおりです。</p>
+</div>
+
 <div class="callout ok">
   <span class="label">ここまで完了したら</span>
   <p>切替は成功です。ただし<strong>まだ作業が残っています。</strong>「<a href="#after">作業後に残っている作業</a>」に必ず進んでください。特に <strong>OS 内のサブスクリプション再登録</strong>は、放置するとセキュリティパッチが当てられない状態が続きます。</p>
@@ -622,6 +634,13 @@ done</code></pre>
 <div class="callout warn">
   <p>これらは<strong>消し忘れやすい</strong>ので、作業完了時のチェックリストに入れてください。実際に、過去の検証で作られたディスクが消されないまま残っていた例があります。</p>
 </div>
+
+<p>手順 5 の <code>./90_tag_resources.sh</code> を実行していれば、上記の対象すべてに管理用タグが付いています。次のコマンドで一覧できます。</p>
+
+<pre><code>aws ec2 describe-tags --filters "Name=key,Values=SwitchEc2Role" \
+  --query 'sort_by(Tags,&amp;ResourceId)[].[ResourceType,ResourceId,Value]' --output table</code></pre>
+
+<p>削除が完了すると、このコマンドの結果は空になります。消し忘れの確認に使ってください。</p>
 
 <h2 id="glossary">用語集</h2>
 

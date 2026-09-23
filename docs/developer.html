@@ -111,6 +111,7 @@
   <a href="#switch">03_switch.sh の内部</a>
   <a href="#rollback">05_rollback.sh の内部</a>
   <a href="#verify">04 / 06 の検証ロジック</a>
+  <a href="#tagging">90_tag_resources.sh の内部</a>
   <div class="navgroup">堅牢性</div>
   <a href="#invariants">安全ガードと不変条件</a>
   <a href="#failure">失敗モデル（中断耐性）</a>
@@ -183,6 +184,7 @@
 <tr><td><code>04_verify.sh</code></td><td>切替後の項目別検証</td><td class="readonly">読み取りのみ</td></tr>
 <tr><td><code>05_rollback.sh</code></td><td>バックアップ AMI からの切り戻し（11 ステップ）</td><td class="destructive">terminate あり</td></tr>
 <tr><td><code>06_verify_rollback.sh</code></td><td>切り戻し後の項目別検証</td><td class="readonly">読み取りのみ</td></tr>
+<tr><td><code>90_tag_resources.sh</code></td><td>新規作成リソースへのタグ付け（任意の後処理。必須フロー外のため番号を離している）</td><td class="readonly">タグ付与のみ</td></tr>
 </tbody>
 </table>
 </div>
@@ -336,6 +338,10 @@ fi</code></pre>
 <tr><td><code>rollback_instance_id.txt</code></td><td>05 ステップ6</td><td>復旧 EC2 の ID。<strong>存在すると 05 の再実行が禁止される</strong></td></tr>
 <tr><td><code>rollback_preserved_volume_ids.txt</code></td><td>05 ステップ4</td><td><strong>detach の前に書かれる。</strong>残置した ELC 側 EBS の一覧</td></tr>
 <tr><td><code>rollback_instance_after.json</code></td><td>05 ステップ11</td><td>切り戻し後の describe 全文</td></tr>
+<tr><td><code>tag_denylist.txt</code></td><td>90 ステップ0</td><td><strong>絶対にタグを付けない既存リソース ID。</strong>付与直前の照合に使う監査証跡</td></tr>
+<tr><td><code>tag_allowlist.tsv</code></td><td>90 ステップ1</td><td><code>役割&lt;TAB&gt;リソースID</code> のタグ付け対象一覧</td></tr>
+<tr><td><code>tag_plan.json</code> / <code>tag_applied.json</code></td><td>90 ステップ3・4</td><td>付与計画と実付与の証跡。<strong>計画は dry-run でも作るが、実績は dry-run では作らず既存があれば消す</strong></td></tr>
+<tr><td><code>tag_backup_ami.json</code></td><td>90 ステップ1</td><td>バックアップ AMI の describe 全文（スナップショット ID の取得元）</td></tr>
 </tbody>
 </table>
 </div>
@@ -480,6 +486,73 @@ jq -n --slurpfile bd "$dir/block_devices.json" --slurpfile ami "$dir/verify_roll
   <span class="label">検証環境では 06 の UsageOperation 判定が常に PASS する</span>
   <p><code>test-env/</code> は新旧どちらも PAYG AMI を使うため、04 の UsageOperation 判定は<strong>FAIL が期待値</strong>、06 の判定は<strong>自明に PASS</strong> する。この項目のロジックの正しさは本番の ELC AMI でしか実証できない。</p>
 </div>
+
+<h2 id="tagging">90_tag_resources.sh の内部</h2>
+
+<h3>解きたい問題</h3>
+
+<p>01〜04 が新しく作るリソースのうち、追跡タグが付くのは 02 のバックアップ AMI とスナップショット、03 の破棄予定ルート EBS だけだった。切替後の新 EC2 は旧 EC2 のタグをコピーするだけで、独自の追跡タグを持たない。棚卸しと消し忘れ検出のために、<strong>この作業で新しく作られたものだけ</strong>を一括で識別できるようにする。</p>
+
+<h3>最大の罠：新 EC2 の describe を舐めてはいけない</h3>
+
+<p>もっとも自然に見える実装は「新 EC2 の <code>describe-instances</code> から <code>BlockDeviceMappings</code> を列挙してタグを付ける」だが、<strong>これは既存リソース全部にタグを打つ。</strong>03 の方式では切替後の新 EC2 にぶら下がっている EBS は<strong>旧 EBS そのもの</strong>だからである。</p>
+
+<p>そこで allowlist は「新規作成した証拠のある ID」を状態ファイルからのみ組み立て、describe の全舐めは一切しない。</p>
+
+<div class="tablewrap">
+<table>
+<thead><tr><th>役割</th><th>リソース</th><th>特定に使う状態ファイル</th></tr></thead>
+<tbody>
+<tr><td><code>backup-ami</code></td><td>バックアップ AMI</td><td><code>backup_ami_id.txt</code></td></tr>
+<tr><td><code>backup-snapshot</code></td><td>上記 AMI 配下のスナップショット</td><td>上記 AMI を <code>describe-images</code> した BDM</td></tr>
+<tr><td><code>new-instance</code></td><td>切替後の新 EC2</td><td><code>new_instance_id.txt</code></td></tr>
+<tr><td><code>discarded-root-volume</code></td><td>新 AMI 由来の破棄予定ルート EBS</td><td><code>discarded_root_volume_id.txt</code></td></tr>
+</tbody>
+</table>
+</div>
+
+<p>ENI は対象外。03 は既存 ENI を <code>--network-interfaces</code> で ID 指定して再利用するだけで、新規作成しないためである。</p>
+
+<h3>4 層のガード</h3>
+
+<ol>
+  <li><strong>allowlist</strong> — 新規作成の証拠がある ID だけを状態ファイルから組み立てる</li>
+  <li><strong>denylist</strong> — 触ってはいけない ID（旧 EBS・旧 ENI・旧 EC2）を独立に組み立て、<code>create-tags</code> 直前に全 ID を照合する。構築時には「保護すべきものが 1 件残らず載っているか」の完全性も検査する</li>
+  <li><strong>ID 型プレフィクス検査</strong> — 役割と ID の型（<code>ami-</code> / <code>snap-</code> / <code>i-</code> / <code>vol-</code>）が一致するか。<code>eni-</code> は無条件で中止</li>
+  <li><strong>由来証明</strong> — 破棄予定ルート EBS の <code>SnapshotId</code> が <code>NEW_AMI_ID</code> のスナップショットと一致するかを API で実測する</li>
+</ol>
+
+<div class="callout info">
+  <span class="label">denylist と由来証明は役割が違う</span>
+  <p>denylist が言えるのは「<strong>既知の</strong>既存リソースではない」ことだけで、状態ファイルが壊れて denylist 自体が痩せた場合は無力になる。由来証明は逆に「<strong>新規作成分である</strong>」ことの積極的な証明であり、denylist を迂回された場合の最後の砦として働く。実機検証では denylist の供給元を両方とも空にして旧 EBS を対象に偽装しても、由来証明が中止させることを確認した。</p>
+</div>
+
+<h3>冪等性はタグ値の出所で担保する</h3>
+
+<p><code>create-tags</code> は同じキーを上書きするので API 自体は冪等だが、<strong>タグ値に <code>date</code> などの実行時依存の値を入れると、再実行のたびに値が変わって結果が冪等でなくなる。</strong>そのため 90 が書くタグ値は状態ファイル由来の値だけに限定し、バッチ識別子には 02 が <code>CreatedAt</code> に使ったのと同じ <code>backup_created_at.txt</code> を用いる。</p>
+
+<p>付与計画（ステップ3）と実付与（ステップ4）で <code>build_all_tags()</code> を 2 回呼ぶが、この関数が純粋関数であることが計画と実結果の一致を保証している。</p>
+
+<h3>04 との実行順の制約</h3>
+
+<p>04 と 06 は「旧 EC2 タグ == 新 EC2 タグ」の<strong>完全一致</strong>を FAIL 判定する。90 が新 EC2 へタグを足すとここが必ず落ちるため、90 は 04 の完了後に実行する必要がある。</p>
+
+<p>既存コードを変更しない制約のもとで作ったので、この順序はスクリプト側で検知する。<code>timings_04_verify.tsv</code>（04 が対象処理を開始した証跡）と <code>verify_new_tags.normalized.json</code>（タグ比較ステップまで到達した証跡）の両方がなければ中止する。</p>
+
+<div class="callout warn">
+  <span class="label">04 の PASS/FAIL は判定できない</span>
+  <p>04 は判定結果を標準出力に出すだけで状態ファイルに残さないため、90 が確認できるのは「04 が最後まで走った」ことまでで、「全項目 PASS だった」かは分からない。この限界は確認プロンプトの文面で運用者に開示し、目視確認を促す設計にしている。</p>
+</div>
+
+<p><code>--no-instance-tags</code> で EC2 を対象外にすると、AMI・スナップショット・EBS だけが対象になり、この順序制約は構造的に消える。</p>
+
+<h3>切り戻し済み対象の扱い</h3>
+
+<p>05 は新 EC2 を terminate するため、切り戻し後は <code>new_instance_id.txt</code> の指す先が存在しない。<code>rollback_instance_id.txt</code> があれば無条件で中止する。90 は正常系専用の後処理である。</p>
+
+<h3>既存コードとの関係</h3>
+
+<p>90 は <code>lib/common.sh</code> を <code>source</code> して読むだけで、01〜06 と共通ライブラリのいずれも変更していない。固有オプションを持つため <code>parse_yes_flag</code> は使わず、03・05 と同じ方針で専用パーサ <code>parse_tag_flags()</code> を持つ。<code>config.env</code> の任意変数 <code>TAG_EXTRA_TAGS</code> も、<code>load_config</code> の直後に既定値を与えることで <code>lib/common.sh</code> と <code>config.env.example</code> を変更せずに実現している（05 の <code>ROLLBACK_ALLOW_EXTRA_VOLUMES</code> と同じ手口）。</p>
 
 <h2 id="invariants">安全ガードと不変条件</h2>
 
@@ -639,6 +712,9 @@ aws_json ec2 detach-volume --volume-id "$discard_volume" ...   # ← 書き込�
   <li><strong><code>lib/common.sh</code> を変更すると 01〜04 の検証済み前提が崩れる。</strong>変更するなら全スクリプトの再検証が要る</li>
   <li><strong>新しい引き継ぎ属性を足すときは 01（保存）→ 03/05（再指定）→ 04/06（検証）の 3 か所</strong>がセット</li>
   <li>述語関数を追加する場合、<code>wait_until</code> の契約（<strong>終端到達不能は rc=2</strong>）に従うこと。従わないとタイムアウトまで無駄に待つ</li>
+  <li><strong>90 のタグ体系を変えるときは冒頭の <code>build_tags()</code> だけを書き換える。</strong>タグ値に実行時依存の値を入れると冪等性が壊れるので、状態ファイル由来の値だけを使うこと</li>
+  <li><strong>90 の allowlist に新しい役割を足すときは、<code>assert_taggable()</code> の ID 型プレフィクス表にも必ず追加する。</strong>未知の役割は中止するようにしてあるので足し忘れれば止まるが、逆に言うと片方だけでは動かない</li>
+  <li>jq で <code>index()</code> を使うとき、その内側の <code>.</code> は <strong>パイプ元ではなく <code>index()</code> のレシーバ（配列）を指す</strong>。比較したい値は <code>(.Field) as $v</code> で先に束縛すること。90 の由来証明で実際に踏んだ</li>
 </ul>
 
 <h3>既知の改善候補</h3>

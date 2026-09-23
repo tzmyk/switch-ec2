@@ -61,6 +61,7 @@ RHEL の PAYG（Pay As You Go）ライセンスで稼働中の EC2 を、ELC（E
 | `04_verify.sh` | AWS API 側の切替後検証 |
 | `05_rollback.sh` | バックアップ AMI のスナップショットからの切り戻し（破壊的操作を含む） |
 | `06_verify_rollback.sh` | AWS API 側の切り戻し後検証 |
+| `90_tag_resources.sh` | 新規作成リソースへのタグ付け（任意の後処理。必須フロー外のため番号を離している） |
 | `config.env` / `targets.txt` | CloudShell 側の設定・対象一覧（`.example` から作成） |
 | `docs/operator.html` / `docs/developer.html` | 人間向け参照ドキュメント（操作手順 / 内部構造）。実装判断の根拠は本書と `README.md` を優先 |
 | `test-env/` | 検証専用 Terraform 環境（本番手順外・リポジトリ管理外） |
@@ -73,6 +74,12 @@ RHEL の PAYG（Pay As You Go）ライセンスで稼働中の EC2 を、ELC（E
                                                        └─→ 04_verify が期待値として使用
 03_switch  ──→ work/<旧ID>/new_instance_id.txt ほか ────→ 04_verify が対象特定に使用
 05_rollback ─→ work/<旧ID>/rollback_instance_id.txt ほか ─→ 06_verify_rollback が対象特定に使用
+
+02_backup  ──→ backup_ami_id.txt ────────────────────┐
+03_switch  ──→ new_instance_id.txt ──────────────────┼─→ 90_tag_resources が対象特定に使用
+03_switch  ──→ discarded_root_volume_id.txt ─────────┘
+04_verify  ──→ verify_new_tags.normalized.json ───────→ 90_tag_resources が完了証跡として使用
+05_rollback ─→ rollback_instance_id.txt ─────────────→ 90_tag_resources が対象外判定に使用（存在すれば中止）
 ```
 
 ## 3. 対応範囲
@@ -129,6 +136,7 @@ UserData（`COPY_USER_DATA=true` の opt-in）、t2/t3/t3a/t4g の CreditSpecifi
 | `WAIT_VOLUME_STATE_TIMEOUT` | 1800 | ボリューム状態待機（秒）。間隔 10 秒 |
 | `WAIT_ENI_AVAILABLE_TIMEOUT` | 900 | ENI available 待機（秒）。間隔 10 秒 |
 | `WAIT_STATUS_OK_TIMEOUT` | 1800 | 2/2 ステータスチェック待機（秒）。間隔 20 秒 |
+| `TAG_EXTRA_TAGS` | 空 | 90 が固定タグに加えて付与する任意タグ。`Key=Value` のカンマ区切り。使用可能文字は `[A-Za-z0-9._:/+@=,-]` に限定し、違反時は中止。90 側で既定値を与えるため `config.env.example` への記載は必須ではない |
 
 ### 4.2 targets.txt（CloudShell 側）
 
@@ -326,6 +334,48 @@ README の手動復旧 runbook に従う。
   タグが空になる（実機検証で確認済み）。ボリュームタグを条件にした外部の自動化がある場合は
   `before_volumes.json` を参照して手動で復元する運用とする
 
+### 5.8 90_tag_resources.sh
+
+**目的**: 01〜04 の正常系で新規作成された AWS リソースへ運用タグを付与する。既存リソース
+（旧 EBS・旧 ENI・旧 EC2）には一切タグを付けない。任意の後処理であり、必須フローには含めない。
+
+**対象**（4役割）:
+
+| 役割 | リソース | 特定方法 |
+|---|---|---|
+| `backup-ami` | バックアップ AMI | `backup_ami_id.txt` |
+| `backup-snapshot` | 上記 AMI 配下のスナップショット | `describe-images` の BlockDeviceMappings |
+| `new-instance` | 切替後の新 EC2 | `new_instance_id.txt` |
+| `discarded-root-volume` | 新 AMI 由来の破棄予定ルート EBS | `discarded_root_volume_id.txt` |
+
+ENI は 03 が既存 ID を `--network-interfaces` で再利用するだけで新規作成しないため、対象外とする。
+
+**処理**:
+
+- ステップ0: 前提条件の検査（切り戻し済みでないこと、04 の完了証跡があること）と denylist の構築
+- ステップ1: 状態ファイルから allowlist（新規作成分の ID）を特定
+- ステップ2: 破棄予定ルート EBS の `SnapshotId` を `NEW_AMI_ID` のスナップショットと照合（由来証明）
+- ステップ3: 付与計画を `tag_plan.json` へ書き出す（dry-run でも作成する）
+- ステップ4: `create-tags` を発行し、`tag_applied.json` を証跡として残す
+
+**設計上の要点**:
+
+- **allowlist は状態ファイルからのみ組み立て、新 EC2 の `describe` を列挙しない。** 03 の方式では
+  切替後の新 EC2 にぶら下がる EBS は旧 EBS そのものであり、列挙すると既存リソースが対象に混入する
+- タグ値は状態ファイル由来の値だけで構成する。`date` など実行時に変わる値を使うと、API は冪等でも
+  結果が冪等でなくなるため、バッチ識別子には 02 が `CreatedAt` に使った `backup_created_at.txt` を用いる
+- 02・03 が付与済みのタグキー（`Name` / `Purpose` / `CreatedAt` / `SourceInstanceId` /
+  `SourceOldInstanceId` / `NewInstanceId` / `DeleteAfterVerification`）と `aws:` 接頭辞は上書き禁止
+- 付与するタグは冒頭の `build_tags()` に定数として集約する。タグ体系の変更はこの関数に閉じる
+
+**実行順の制約**: 新 EC2 へタグを追加すると §7.1 のタグ一致判定が FAIL する。そのため 04 の完了後に
+実行する。`--no-instance-tags` で EC2 を対象外にすると、この制約は構造的に消える。
+
+**オプション**: `--dry-run`（発行せず計画のみ。安全ガードは本番同様に通す）、`--no-instance-tags`、
+`--skip-order-check`（04 の完了証跡チェックを警告へ格下げ）、`--yes`。
+
+**実行方式**: 逐次のみ。破壊的操作を含まないため並行モードは持たない。
+
 ## 6. 状態ファイル仕様
 
 ### 6.1 `work/<旧インスタンスID>/`（CloudShell 側）
@@ -356,8 +406,13 @@ README の手動復旧 runbook に従う。
 | `before_instance.json` / `before_volumes.json` / `before_enis.json` | 01 | 切替前の instance・EBS・ENI の describe 全文。`normalize_describe_json` でキー順と配列順のみ安定化（フィールドの増減なし） | `after_*` との手動 diff（§7.2） |
 | `after_instance.json` / `after_volumes.json` / `after_enis.json` | 04 | 切替後の同形式。volume・ENI は新 EC2 に実際に付いているものを対象とするため、`before_*` と同じ集合になる | `before_*` との手動 diff（§7.2） |
 | `after_rollback_instance.json` / `after_rollback_volumes.json` / `after_rollback_enis.json` | 06 | 切り戻し後の正規化済み describe 全文。EBS は全 VolumeId が新規 | `before_*` との手動 diff（§7.3） |
-| `<スクリプト名>.log` | 01〜06 | 対象単位のログ（追記）。画面出力と同内容 | 障害調査 |
-| `timings_<スクリプト名>.tsv` | 01〜06 | `名前<TAB>秒` の所要時間。対象単位で実行ごとに作り直す。03・05・06 はステップ単位 | 所要時間の見積り |
+| `tag_denylist.txt` | 90 | 絶対にタグを付けない既存リソース ID（旧 EBS・旧 ENI・旧 EC2）。監査証跡 | 90（付与直前の照合） |
+| `tag_allowlist.tsv` | 90 | `役割<TAB>リソースID` のタグ付け対象一覧 | 90、人間の確認用 |
+| `tag_plan.json` | 90 | 付与計画（役割・リソース ID・タグ一覧）。dry-run でも作成する | 事前確認・監査 |
+| `tag_applied.json` | 90 | 実際に付与した内容。dry-run では作成せず、既存があれば削除する | 付与実績の証跡 |
+| `tag_backup_ami.json` | 90 | バックアップ AMI の describe 全文（スナップショット ID の取得元） | 90 |
+| `<スクリプト名>.log` | 01〜06・90 | 対象単位のログ（追記）。画面出力と同内容 | 障害調査 |
+| `timings_<スクリプト名>.tsv` | 01〜06・90 | `名前<TAB>秒` の所要時間。対象単位で実行ごとに作り直す。03・05・06・90 はステップ単位 | 所要時間の見積り |
 
 ## 7. 検証仕様
 
@@ -442,6 +497,13 @@ ENI AttachmentId、UsageOperationUpdateTime、PrivateDnsName 関連、`aws:` 予
 | EBS 先行デタッチ | 05 | DOT 反映漏れ時の EBS 削除に対する二重防御 |
 | 二重実行禁止と専用 client token | 05 | 復旧 EC2 の二重起動・03 の冪等性キーとの衝突 |
 | 保全 EBS の UUID 重複警告タグ | 05 | 復旧 EC2 への誤アタッチ・誤マウント |
+| allowlist ∧ ¬denylist の二重判定 | 90（付与直前） | 旧 EBS・旧 ENI・旧 EC2 など既存リソースへの誤タグ |
+| denylist の完全性アサート | 90（構築時） | 状態ファイル破損で保護対象が欠けたまま付与が進む |
+| 役割と ID 型プレフィクスの照合 | 90 | 役割の取り違えによる別種リソースへの付与 |
+| 切替先 AMI スナップショットとの由来照合 | 90 | denylist を迂回した場合の、新規作成分でないボリュームへの付与 |
+| 予約タグキーの上書き禁止 | 90 | 02・03 が付けた `Purpose` 等の管理タグの破壊 |
+| 切り戻し済み対象の検出 | 90（処理開始前） | terminate 済み新 EC2 への付与試行 |
+| 04 完走証跡の確認 | 90（処理開始前） | §7.1 のタグ一致判定を壊す実行順序 |
 
 ## 9. 終了コードとエラー時の状態
 
@@ -505,4 +567,6 @@ ENI AttachmentId、UsageOperationUpdateTime、PrivateDnsName 関連、`aws:` 予
 | `30154d9` | 再検証結果をレポートに追記 |
 | `c3b020b` | 仕様書 SPEC.md 新規作成 |
 | `c58e30e` | 引き継ぎ属性の拡充（shutdown behavior・MaintenanceOptions・PrivateDnsNameOptions・CPU options・CapacityReservation・UserData opt-in）＋ Spot 検出 |
-| 未コミット | ログへの経過秒付与とファイル保存、03 のステップ所要時間計測（§5.1・§6.1）、03 の並行実行モード `--parallel[=N]`（§5.4）、切替前後 describe 全文の保存と手動 diff（§6.1・§7.2）、03 の errtrace 有効化（§8） |
+| `f6b060d` | ログへの経過秒付与とファイル保存、03 のステップ所要時間計測（§5.1・§6.1）、03 の並行実行モード `--parallel[=N]`（§5.4）、切替前後 describe 全文の保存と手動 diff（§6.1・§7.2）、03 の errtrace 有効化（§8） |
+| `f980dec` | 05_rollback.sh・06_verify_rollback.sh の追加（§5.6・§5.7・§7.3・§8）、OS 内実測（ec2-side）の対象外化 |
+| `09b04b9` | 90_tag_resources.sh の追加（§2.2・§2.3・§4.1・§5.8・§6.1・§8） |

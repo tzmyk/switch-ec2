@@ -20,6 +20,7 @@ EC2 の課金コード/UsageOperation は、インスタンス起動時に指定
 - `04_verify.sh`: 切替後確認
 - `05_rollback.sh`: バックアップ AMI からの切り戻し
 - `06_verify_rollback.sh`: 切り戻し後確認
+- `90_tag_resources.sh`: 新規作成リソースへのタグ付け（任意の後処理）
 - `docs/operator.html`: 操作者向けドキュメント（手順・注意点・トラブル時の対応）
 - `docs/developer.html`: 開発者向けドキュメント（内部構造・設計判断・状態ファイル仕様）
 
@@ -81,6 +82,13 @@ vi targets.txt
 ./04_verify.sh
 ```
 
+新規作成したリソースへタグを付ける場合は、`04_verify.sh` の完了後に実行します（任意）。
+
+```bash
+./90_tag_resources.sh --dry-run
+./90_tag_resources.sh
+```
+
 切替後に切り戻す場合は CloudShell で次を実行します。`05_rollback.sh` は逐次実行のみです。
 
 ```bash
@@ -130,7 +138,7 @@ vi targets.txt
 
 ログは画面（stderr）と同時に `${WORK_DIR}/<instance-id>/<スクリプト名>.log` へ追記されます。
 
-`03_switch.sh`、`05_rollback.sh`、`06_verify_rollback.sh` はステップごとの所要時間を計測し、対象の処理完了時に内訳を表示します。同じ内容は `${WORK_DIR}/<instance-id>/timings_<スクリプト名>.tsv`（`ステップ名<TAB>秒` の TSV）に保存されるので、メンテナンスウィンドウの見積りに使えます。
+`03_switch.sh`、`05_rollback.sh`、`06_verify_rollback.sh`、`90_tag_resources.sh` はステップごとの所要時間を計測し、対象の処理完了時に内訳を表示します。同じ内容は `${WORK_DIR}/<instance-id>/timings_<スクリプト名>.tsv`（`ステップ名<TAB>秒` の TSV）に保存されるので、メンテナンスウィンドウの見積りに使えます。
 
 ```
 [INFO] [i-0abc] 切替所要時間 内訳: i-0abc -> i-0xyz
@@ -331,6 +339,50 @@ AMI の全 BDM と SnapshotId、スナップショットの `completed`、ELC �
 サイズ、タイプ、IOPS、Throughput、暗号化属性で照合します。保全 EBS の残置、ELC 新 EC2 の
 terminated、復旧 EC2 の 2/2 ステータス、全 ENI のアタッチも独立に再確認します。
 
+### 90_tag_resources.sh
+
+01〜04 の正常系で新規作成された AWS リソースへ運用タグを付与する、任意の後処理です。
+番号を 90 にしているのは、必須フロー（01〜06）ではないことを実行順の見た目で示すためです。
+
+対象は次の4種類だけです。旧 EBS・旧 ENI・旧 EC2 のような**切替前から存在するリソースには
+一切タグを付けません**。ENI は 03 が既存 ID を再利用するだけで新規作成しないため対象外です。
+
+| 役割 | リソース | 特定に使う状態ファイル |
+|---|---|---|
+| `backup-ami` | バックアップ AMI | `backup_ami_id.txt` |
+| `backup-snapshot` | 上記 AMI 配下のスナップショット | `backup_ami_id.txt` から `describe-images` |
+| `new-instance` | 切替後の新 EC2 | `new_instance_id.txt` |
+| `discarded-root-volume` | 新 AMI 由来の破棄予定ルート EBS | `discarded_root_volume_id.txt` |
+
+付与するタグはスクリプト冒頭の `build_tags()` に定数として集約しています。タグ体系を変える場合は
+この関数だけを書き換えてください。`config.env` に `TAG_EXTRA_TAGS="CostCenter=1234,Owner=infra"` を
+追加すると、固定タグに加えて任意のタグも付与できます。
+
+02 が付けた `Purpose=switch-ec2-backup`、03 が付けた `Purpose=switch-ec2-discarded-root` や
+`DeleteAfterVerification` などの既存タグは上書きしません。これらのキーは保護対象として定義してあり、
+侵そうとした場合は中止します。タグ値は状態ファイル由来の値だけで組み立てるため、再実行しても
+結果は変わりません（冪等）。
+
+**実行順の制約**: 新 EC2 にタグを追加すると `04_verify.sh` のタグ一致判定が FAIL します。
+そのため 90 は必ず `04_verify.sh` の完了後に実行してください。完了証跡
+（`timings_04_verify.tsv` と `verify_new_tags.normalized.json`）がない場合は中止します。
+
+**切り戻し済みの対象は実行できません。** `05_rollback.sh` は新 EC2 を terminate するため、
+`rollback_instance_id.txt` が存在する対象は無条件で中止します。
+
+| オプション | 内容 |
+|---|---|
+| `--dry-run` | 付与予定を表示するだけで `create-tags` を発行しない。安全ガードは本番と同じに通す |
+| `--no-instance-tags` | EC2 インスタンスを対象外にする。上記の実行順の制約がなくなる |
+| `--skip-order-check` | 04 の完了証跡チェックを警告に格下げする |
+| `--yes` | 確認プロンプトを省略する |
+
+生成する状態ファイルは `tag_denylist.txt`（保護対象ID）、`tag_allowlist.tsv`（タグ付け対象）、
+`tag_plan.json`（付与計画。dry-run でも作成）、`tag_applied.json`（実付与の証跡。dry-run では作らない）、
+`tag_backup_ami.json` です。
+
+実測では、対象2台・計11リソースへの付与が約20秒でした。待機処理を持たないため所要時間は台数にほぼ比例します。
+
 ## 切替前後 describe の手動 diff
 
 `04_verify.sh` の項目別チェックは「見るべき項目を見る」検証です。それとは別に、**想定していない箇所が変化していないか**を目視で確認するため、instance / volume / ENI の `describe` 全文を切替前後で保存しています。
@@ -508,6 +560,12 @@ PAYG時代のRHUIリポジトリはELCインスタンスでは認可されず（
   (1) `rollback_preserved_volume_ids.txt` の保全 EBS、(2) `discarded_root_volume_id.txt` の03由来ルート、
   (3) `backup_ami_id.txt` の AMI とスナップショット、(4) opt-in で保全したタグなし追加 EBS、
   の順に対象を特定して手動削除してください。
+- `90_tag_resources.sh` は `04_verify.sh` の後に実行してください。先に実行すると 04 のタグ一致判定が
+  FAIL します。90 の実行後に 04 を再実行した場合も同じ理由で FAIL しますが、これは設計どおりの挙動です。
+- `90_tag_resources.sh` は新規作成分だけを対象とし、allowlist と denylist の二重判定に加えて、
+  ID 型の検査と切替先 AMI のスナップショットとの由来照合で既存リソースへのタグ付けを防ぎます。
+  allowlist は状態ファイルから組み立てており、新 EC2 の `describe` を列挙する実装にはしていません。
+  切替後の新 EC2 にぶら下がる EBS は旧 EBS そのものであり、列挙すると既存リソースが対象に混入するためです。
 
 ## 切り戻し概要
 
@@ -624,13 +682,13 @@ aws ec2 describe-instances \
 ## 構文チェック
 
 ```bash
-bash -n lib/common.sh 01_prepare.sh 02_backup.sh 03_switch.sh 04_verify.sh 05_rollback.sh 06_verify_rollback.sh
+bash -n lib/common.sh 01_prepare.sh 02_backup.sh 03_switch.sh 04_verify.sh 05_rollback.sh 06_verify_rollback.sh 90_tag_resources.sh
 ```
 
 `shellcheck` がある環境では、追加で以下を実行してください。
 
 ```bash
-shellcheck lib/common.sh 01_prepare.sh 02_backup.sh 03_switch.sh 04_verify.sh 05_rollback.sh 06_verify_rollback.sh
+shellcheck lib/common.sh 01_prepare.sh 02_backup.sh 03_switch.sh 04_verify.sh 05_rollback.sh 06_verify_rollback.sh 90_tag_resources.sh
 ```
 
 ## 検証環境
