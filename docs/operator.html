@@ -637,8 +637,8 @@ done</code></pre>
 
 <p>手順 5 の <code>./90_tag_resources.sh</code> を実行していれば、上記の対象すべてに管理用タグが付いています。次のコマンドで一覧できます。</p>
 
-<pre><code>aws ec2 describe-tags --filters "Name=key,Values=SwitchEc2Role" \
-  --query 'sort_by(Tags,&amp;ResourceId)[].[ResourceType,ResourceId,Value]' --output table</code></pre>
+<pre><code>aws ec2 describe-tags --filters "Name=key,Values=MyTag" "Name=value,Values=MyValue" \
+  --query 'sort_by(Tags,&amp;ResourceId)[].[ResourceType,ResourceId]' --output table</code></pre>
 
 <p>削除が完了すると、このコマンドの結果は空になります。消し忘れの確認に使ってください。</p>
 

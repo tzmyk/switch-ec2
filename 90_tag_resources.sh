@@ -22,26 +22,13 @@ source "$SCRIPT_DIR/lib/common.sh"
 # ===== タグ定義（運用タグ体系が確定したらこのブロックだけを書き換える）=====
 #
 # 目的: 90 が付与するタグのキーと値を一箇所に集約する。
-# 引数: 役割名, 旧EC2インスタンスID, 状態ディレクトリ / 出力: stdout に "Key=K,Value=V" を1行ずつ。
-# 注意: 値はすべて状態ファイル由来にすること。date など実行時に変わる値を入れると、再実行のたびに
-#       タグ値が変わり「API は冪等なのに結果が冪等でない」状態になる。バッチ識別子には 02 が
-#       CreatedAt に使ったのと同じ backup_created_at.txt を使う。
-# 使える値:
-#   $old_instance_id                                          旧EC2インスタンスID
-#   $role                                                     backup-ami / backup-snapshot / new-instance / discarded-root-volume
-#   $(<"$dir/backup_created_at.txt")                          02 が打ったタイムスタンプ
-#   $(instance_name_for_file "$dir/instance.json" "$old_instance_id")  正規化済みの Name タグ
-#   $NEW_AMI_ID                                               切替先AMI ID（config.env）
+# 引数: 役割名, 旧EC2インスタンスID, 状態ディレクトリ（固定タグのため未使用）
+# 出力: stdout に "Key=K,Value=V" を1行ずつ。
+# 注意: 全リソースに同じ固定タグを付ける。タグを増やすときはキーと値の組を printf の引数に追加する。
+#       値にカンマ・空白は使えない（create-tags の Key=,Value= ショートハンドの制約）。
 build_tags() {
-  local role=$1
-  local old_instance_id=$2
-  local dir=$3
-  # TODO: 運用タグ体系が確定したら、以下のキー名・値を実際のものへ差し替える。
   printf 'Key=%s,Value=%s\n' \
-    ManagedBy                 "switch-ec2" \
-    SwitchEc2Role             "$role" \
-    SwitchEc2SourceInstanceId "$old_instance_id" \
-    SwitchEc2Batch            "$(<"$dir/backup_created_at.txt")"
+    MyTag "MyValue"
 }
 
 # 02/03 が作成時に付与済みのタグキー。90 はこれらを絶対に書き換えない。

@@ -354,14 +354,13 @@ terminated、復旧 EC2 の 2/2 ステータス、全 ENI のアタッチも独�
 | `new-instance` | 切替後の新 EC2 | `new_instance_id.txt` |
 | `discarded-root-volume` | 新 AMI 由来の破棄予定ルート EBS | `discarded_root_volume_id.txt` |
 
-付与するタグはスクリプト冒頭の `build_tags()` に定数として集約しています。タグ体系を変える場合は
-この関数だけを書き換えてください。`config.env` に `TAG_EXTRA_TAGS="CostCenter=1234,Owner=infra"` を
+付与するタグは全リソース共通の固定タグ `MyTag=MyValue` で、スクリプト冒頭の `build_tags()` に
+定数として集約しています。タグを変える場合はこの関数だけを書き換えてください。`config.env` に `TAG_EXTRA_TAGS="CostCenter=1234,Owner=infra"` を
 追加すると、固定タグに加えて任意のタグも付与できます。
 
 02 が付けた `Purpose=switch-ec2-backup`、03 が付けた `Purpose=switch-ec2-discarded-root` や
 `DeleteAfterVerification` などの既存タグは上書きしません。これらのキーは保護対象として定義してあり、
-侵そうとした場合は中止します。タグ値は状態ファイル由来の値だけで組み立てるため、再実行しても
-結果は変わりません（冪等）。
+侵そうとした場合は中止します。タグは固定値なので、再実行しても結果は変わりません（冪等）。
 
 **実行順の制約**: 新 EC2 にタグを追加すると `04_verify.sh` のタグ一致判定が FAIL します。
 そのため 90 は必ず `04_verify.sh` の完了後に実行してください。完了証跡

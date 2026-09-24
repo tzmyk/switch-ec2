@@ -712,7 +712,7 @@ aws_json ec2 detach-volume --volume-id "$discard_volume" ...   # ← 書き込�
   <li><strong><code>lib/common.sh</code> を変更すると 01〜04 の検証済み前提が崩れる。</strong>変更するなら全スクリプトの再検証が要る</li>
   <li><strong>新しい引き継ぎ属性を足すときは 01（保存）→ 03/05（再指定）→ 04/06（検証）の 3 か所</strong>がセット</li>
   <li>述語関数を追加する場合、<code>wait_until</code> の契約（<strong>終端到達不能は rc=2</strong>）に従うこと。従わないとタイムアウトまで無駄に待つ</li>
-  <li><strong>90 のタグ体系を変えるときは冒頭の <code>build_tags()</code> だけを書き換える。</strong>タグ値に実行時依存の値を入れると冪等性が壊れるので、状態ファイル由来の値だけを使うこと</li>
+  <li><strong>90 のタグ体系を変えるときは冒頭の <code>build_tags()</code> だけを書き換える。</strong>現在は全リソース共通の固定タグ <code>MyTag=MyValue</code>。タグ値に実行時依存の値を入れると冪等性が壊れるので入れないこと</li>
   <li><strong>90 の allowlist に新しい役割を足すときは、<code>assert_taggable()</code> の ID 型プレフィクス表にも必ず追加する。</strong>未知の役割は中止するようにしてあるので足し忘れれば止まるが、逆に言うと片方だけでは動かない</li>
   <li>jq で <code>index()</code> を使うとき、その内側の <code>.</code> は <strong>パイプ元ではなく <code>index()</code> のレシーバ（配列）を指す</strong>。比較したい値は <code>(.Field) as $v</code> で先に束縛すること。90 の由来証明で実際に踏んだ</li>
 </ul>

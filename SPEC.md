@@ -362,8 +362,8 @@ ENI は 03 が既存 ID を `--network-interfaces` で再利用するだけで�
 
 - **allowlist は状態ファイルからのみ組み立て、新 EC2 の `describe` を列挙しない。** 03 の方式では
   切替後の新 EC2 にぶら下がる EBS は旧 EBS そのものであり、列挙すると既存リソースが対象に混入する
-- タグ値は状態ファイル由来の値だけで構成する。`date` など実行時に変わる値を使うと、API は冪等でも
-  結果が冪等でなくなるため、バッチ識別子には 02 が `CreatedAt` に使った `backup_created_at.txt` を用いる
+- 付与するタグは全リソース共通の固定値（`MyTag=MyValue`）とする。実行時に変わる値を含まないため、
+  再実行しても結果は変わらない（冪等）
 - 02・03 が付与済みのタグキー（`Name` / `Purpose` / `CreatedAt` / `SourceInstanceId` /
   `SourceOldInstanceId` / `NewInstanceId` / `DeleteAfterVerification`）と `aws:` 接頭辞は上書き禁止
 - 付与するタグは冒頭の `build_tags()` に定数として集約する。タグ体系の変更はこの関数に閉じる
